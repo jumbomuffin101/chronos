@@ -1,0 +1,5 @@
+add_executable(chronos_core_tests core/test_order.cpp)
+target_link_libraries(chronos_core_tests PRIVATE chronos_core GTest::gtest_main)
+chronos_configure_target(chronos_core_tests)
+include(GoogleTest)
+gtest_discover_tests(chronos_core_tests)

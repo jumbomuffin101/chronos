@@ -1,0 +1,50 @@
+cmake_minimum_required(VERSION 3.20)
+project(Chronos VERSION 0.1.0 LANGUAGES CXX)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+include(CTest)
+include(FetchContent)
+option(CHRONOS_ENABLE_SANITIZERS "Enable address and undefined behavior sanitizers" OFF)
+option(CHRONOS_ENABLE_BENCHMARKS "Fetch Google Benchmark for future benchmarks" OFF)
+
+add_library(chronos_core INTERFACE)
+target_compile_features(chronos_core INTERFACE cxx_std_20)
+target_include_directories(chronos_core INTERFACE $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+
+function(chronos_configure_target target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE /W4 /permissive-)
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+  endif()
+  if(CHRONOS_ENABLE_SANITIZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" OR WIN32)
+      message(FATAL_ERROR "Sanitizers require GCC or Clang on a supported non-Windows platform")
+    endif()
+    target_compile_options(${target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+  endif()
+endfunction()
+
+add_executable(chronos_cli apps/exchange_cli/main.cpp)
+target_link_libraries(chronos_cli PRIVATE chronos_core)
+target_compile_definitions(chronos_cli PRIVATE CHRONOS_VERSION="${PROJECT_VERSION}")
+chronos_configure_target(chronos_cli)
+
+if(BUILD_TESTING)
+  FetchContent_Declare(googletest
+    GIT_REPOSITORY https://github.com/google/googletest.git
+    GIT_TAG f8d7d77c06936315286eb55f8de22cd23c188571)
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+  add_subdirectory(tests)
+endif()
+
+if(CHRONOS_ENABLE_BENCHMARKS)
+  set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
+  FetchContent_Declare(googlebenchmark
+    GIT_REPOSITORY https://github.com/google/benchmark.git
+    GIT_TAG v1.8.3
+    GIT_SHALLOW TRUE)
+  FetchContent_MakeAvailable(googlebenchmark)
+endif()
