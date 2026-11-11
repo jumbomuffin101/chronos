@@ -1,5 +1,5 @@
 # Supported orders
 
-Phase 1 can construct and inspect a limit or market order. A limit order has a positive integer tick price; a market order uses zero to indicate no limit price. Both start with positive original quantity, equal remaining quantity, and New status. There is no submission or execution.
+The core constructs and inspects limit or market orders. A limit order has a positive integer tick price; a market order uses zero to indicate no limit price. Both start with positive original quantity, equal remaining quantity, and New status. The in-memory book accepts only limit orders and supports cancellation and modification; it does not submit or execute them.
 
-Future work is intended to support limit orders resting or executing at eligible prices, market orders executing against available liquidity, cancellations, order modifications, and partial fills. The future book will apply price-time priority: better prices first, then earlier eligible orders at the same price. Details such as market-order residual handling, modification priority, and rejection rules remain to be specified and tested.
+The book orders prices best first and preserves FIFO at each price. A same-price quantity reduction (or no-op) retains priority; an increase or price change moves the order to the back of its destination level. Zero quantity is rejected, not treated as cancellation. Execution, market-order handling and partial fills are future matching-engine work; residual and rejection policies remain to be specified.

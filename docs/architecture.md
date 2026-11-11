@@ -1,9 +1,9 @@
 # Architecture
 
-Phase 1 contains only data models and a demonstration CLI. The components below describe planned boundaries, not completed services.
+The models, demonstration CLI, and single-threaded resting limit order book are implemented. All networking, matching and other services below are planned.
 
 - **Core and matching engine:** C++20 domain types and, later, deterministic single-threaded processing of sequenced events. Matching owns order lifecycle decisions.
-- **Limit order book:** owns per-instrument resting orders and price-time priority; it will be used by the engine, independently of networking.
+- **Limit order book:** owns per-instrument resting orders and price-time priority, supports mutations and value snapshots, and is independent of networking. A future engine will use it; it does not match incoming orders.
 - **TCP gateway:** will parse and validate protocol messages and pass requests to the engine. It must not own matching logic.
 - **Market-data publisher:** will turn engine events into outbound updates, separate from order-entry transport and matching.
 - **Risk validation:** will enforce pre-trade limits before requests reach matching; policy and account state are future work.
