@@ -1,10 +1,10 @@
 # Architecture
 
-The models, demonstration CLI, single-threaded resting limit order book and matching engine are implemented. Networking and other services below remain planned.
+The models, demonstration CLI, single-threaded resting limit order book, matching engine and a separate loopback-only networking foundation are implemented. Network order routing, risk and other services remain planned.
 
 - **Core and matching engine:** C++20 domain types and deterministic single-threaded processing of submitted orders. Matching decides executions and produces in-memory reports.
 - **Limit order book:** owns per-instrument resting orders and price-time priority, supports checked fills, mutations and value snapshots, and is independent of networking. It does not decide matches.
-- **TCP gateway:** will parse and validate protocol messages and pass requests to the engine. It must not own matching logic.
+- **TCP gateway:** currently parses bounded versioned frames and serves local handshake, health and echo only; future work will validate and route requests to the engine without owning matching logic.
 - **Market-data publisher:** will turn engine events into outbound updates, separate from order-entry transport and matching.
 - **Risk validation:** will enforce pre-trade limits before requests reach matching; policy and account state are future work.
 - **Python clients:** will submit simulated requests and run strategies or simulations through public interfaces.

@@ -32,6 +32,21 @@ target_link_libraries(chronos_cli PRIVATE chronos_core)
 target_compile_definitions(chronos_cli PRIVATE CHRONOS_VERSION="${PROJECT_VERSION}")
 chronos_configure_target(chronos_cli)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(Threads REQUIRED)
+  add_library(chronos_gateway_lib src/gateway/protocol.cpp src/gateway/tcp.cpp)
+  target_compile_features(chronos_gateway_lib PUBLIC cxx_std_20)
+  target_include_directories(chronos_gateway_lib PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+  target_link_libraries(chronos_gateway_lib PUBLIC Threads::Threads)
+  chronos_configure_target(chronos_gateway_lib)
+  add_executable(chronos_gateway apps/gateway/main.cpp)
+  target_link_libraries(chronos_gateway PRIVATE chronos_gateway_lib)
+  chronos_configure_target(chronos_gateway)
+  add_executable(chronos_gateway_client apps/gateway_client/main.cpp)
+  target_link_libraries(chronos_gateway_client PRIVATE chronos_gateway_lib)
+  chronos_configure_target(chronos_gateway_client)
+endif()
+
 if(BUILD_TESTING)
   FetchContent_Declare(googletest
     GIT_REPOSITORY https://github.com/google/googletest.git
