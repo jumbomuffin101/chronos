@@ -59,9 +59,12 @@ struct Counters {
     std::uint64_t trade = 0;
 };
 
+enum class TransactionMode { Planned, CloneReference };
+
 class MatchingEngine {
   public:
-    explicit MatchingEngine(core::SymbolId symbol, Counters counters = {});
+    explicit MatchingEngine(core::SymbolId symbol, Counters counters = {},
+                            TransactionMode mode = TransactionMode::Planned);
     [[nodiscard]] Outcome submit(const Request &request);
     // Book maintenance only; these do not emit exchange-level cancel/replace reports.
     [[nodiscard]] orderbook::Result cancel_resting(core::OrderId id);
@@ -75,9 +78,12 @@ class MatchingEngine {
     [[nodiscard]] Counters counters() const noexcept { return counters_; }
 
   private:
+    [[nodiscard]] Outcome submit_cloned(const Request &request);
+    [[nodiscard]] Outcome submit_planned(const Request &request);
     core::SymbolId symbol_;
     std::unique_ptr<orderbook::OrderBook> book_;
     Counters counters_;
+    TransactionMode mode_;
 };
 
 } // namespace chronos::matching

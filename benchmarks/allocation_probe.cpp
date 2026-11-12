@@ -4,6 +4,7 @@
 #include <iostream>
 #include <new>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 thread_local bool tracking = false;
@@ -39,7 +40,15 @@ using chronos::orderbook::Result;
 int main() {
     std::cout << "workload,background_orders,scalar_new_calls,requested_bytes\n";
     for (std::uint64_t size : {100ULL, 1000ULL}) {
-        MatchingEngine engine{SymbolId{1}};
+        const char *mode = std::getenv("CHRONOS_TRANSACTION_MODE");
+        if (mode != nullptr && std::string_view{mode} != "planned" &&
+            std::string_view{mode} != "reference")
+            return 1;
+        MatchingEngine engine{SymbolId{1},
+                              {},
+                              mode != nullptr && std::string_view{mode} == "reference"
+                                  ? TransactionMode::CloneReference
+                                  : TransactionMode::Planned};
         for (std::uint64_t i = 1; i <= size; ++i) {
             const auto out =
                 engine.submit({OrderId{i}, SymbolId{1}, Side::Sell, OrderType::Limit, 200, 1});

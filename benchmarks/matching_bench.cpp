@@ -10,6 +10,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace chronos::core;
@@ -33,6 +34,15 @@ enum class Workload {
 constexpr SymbolId symbol{1};
 constexpr std::uint64_t target_base = 1000001;
 
+TransactionMode benchmark_mode() {
+    const char *value = std::getenv("CHRONOS_TRANSACTION_MODE");
+    if (value == nullptr || std::string_view{value} == "planned")
+        return TransactionMode::Planned;
+    if (std::string_view{value} == "reference")
+        return TransactionMode::CloneReference;
+    throw std::runtime_error("CHRONOS_TRANSACTION_MODE must be planned or reference");
+}
+
 Request request(std::uint64_t id, Side side, Price price, Quantity qty,
                 OrderType type = OrderType::Limit) {
     return {OrderId{id}, symbol, side, type, price, qty};
@@ -47,7 +57,8 @@ void insert(MatchingEngine &engine, std::uint64_t id, Price price, Quantity quan
 
 class Scenario {
   public:
-    Scenario(Workload kind, std::size_t count) : kind_(kind), count_(count), engine_(symbol) {
+    Scenario(Workload kind, std::size_t count)
+        : kind_(kind), count_(count), engine_(symbol, {}, benchmark_mode()) {
         for (std::size_t i = 0; i < count_; ++i)
             insert(engine_, static_cast<std::uint64_t>(i) + 1, 200, 1);
         if (kind_ == Workload::SingleFill || kind_ == Workload::Cancel ||

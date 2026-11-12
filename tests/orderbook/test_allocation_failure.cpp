@@ -148,3 +148,98 @@ TEST(MatchingAllocation, MultiFillCommandIsAtomic) {
     EXPECT_TRUE(completed);
     EXPECT_GE(failures, 5);
 }
+
+TEST(MatchingAllocation, PlannedRemainderIntoExistingLevelIsAtomic) {
+    using namespace chronos::matching;
+    int failures = 0;
+    bool completed = false;
+    bool completed_with_next_allocation_failing = false;
+    for (int fail_at = 0; fail_at < 128 && !completed; ++fail_at) {
+        MatchingEngine engine{SymbolId{1}};
+        ASSERT_EQ(
+            engine.submit({OrderId{1}, SymbolId{1}, Side::Buy, OrderType::Limit, 10, 3}).error,
+            Error::None);
+        ASSERT_EQ(
+            engine.submit({OrderId{2}, SymbolId{1}, Side::Sell, OrderType::Limit, 20, 1}).error,
+            Error::None);
+        ASSERT_EQ(engine.modify_resting(OrderId{2}, 10, 1), Result::Success);
+        const auto before = engine.counters();
+        bool threw = false;
+        allocations_until_failure = fail_at;
+        try {
+            auto result =
+                engine.submit({OrderId{3}, SymbolId{1}, Side::Buy, OrderType::Limit, 10, 2});
+            completed_with_next_allocation_failing = allocations_until_failure == 0;
+            allocations_until_failure = -1;
+            EXPECT_EQ(result.error, Error::None);
+            ASSERT_EQ(result.trades.size(), 1U);
+            EXPECT_EQ(result.remaining, 1U);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            threw = true;
+        } catch (...) {
+            allocations_until_failure = -1;
+            throw;
+        }
+        if (threw) {
+            ++failures;
+            ASSERT_TRUE(engine.find(OrderId{1}));
+            ASSERT_TRUE(engine.find(OrderId{2}));
+            EXPECT_EQ(engine.find(OrderId{1})->quantity, 3U);
+            EXPECT_EQ(engine.find(OrderId{2})->quantity, 1U);
+            EXPECT_FALSE(engine.find(OrderId{3}));
+            EXPECT_EQ(engine.counters().command, before.command);
+            EXPECT_EQ(engine.counters().trade, before.trade);
+            EXPECT_EQ(engine.counters().event, before.event);
+        }
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_TRUE(completed_with_next_allocation_failing);
+    EXPECT_GE(failures, 5);
+}
+
+TEST(MatchingAllocation, FullMultiFillCompletesWhenNextAllocationWouldFail) {
+    using namespace chronos::matching;
+    bool complete = false;
+    bool next_allocation_would_fail = false;
+    int failures = 0;
+    for (int fail_at = 0; fail_at < 128 && !complete; ++fail_at) {
+        MatchingEngine engine{SymbolId{1}};
+        ASSERT_EQ(
+            engine.submit({OrderId{1}, SymbolId{1}, Side::Sell, OrderType::Limit, 10, 1}).error,
+            Error::None);
+        ASSERT_EQ(
+            engine.submit({OrderId{2}, SymbolId{1}, Side::Sell, OrderType::Limit, 11, 1}).error,
+            Error::None);
+        const auto before = engine.counters();
+        allocations_until_failure = fail_at;
+        try {
+            auto result =
+                engine.submit({OrderId{3}, SymbolId{1}, Side::Buy, OrderType::Limit, 11, 2});
+            next_allocation_would_fail = allocations_until_failure == 0;
+            allocations_until_failure = -1;
+            ASSERT_EQ(result.error, Error::None);
+            ASSERT_EQ(result.trades.size(), 2U);
+            EXPECT_FALSE(engine.find(OrderId{1}));
+            EXPECT_FALSE(engine.find(OrderId{2}));
+            complete = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            ++failures;
+            ASSERT_TRUE(engine.find(OrderId{1}));
+            ASSERT_TRUE(engine.find(OrderId{2}));
+            EXPECT_EQ(engine.find(OrderId{1})->quantity, 1U);
+            EXPECT_EQ(engine.find(OrderId{2})->quantity, 1U);
+            EXPECT_EQ(engine.counters().command, before.command);
+            EXPECT_EQ(engine.counters().event, before.event);
+            EXPECT_EQ(engine.counters().trade, before.trade);
+        } catch (...) {
+            allocations_until_failure = -1;
+            throw;
+        }
+    }
+    EXPECT_TRUE(complete);
+    EXPECT_TRUE(next_allocation_would_fail);
+    EXPECT_GE(failures, 3);
+}

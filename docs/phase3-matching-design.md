@@ -1,5 +1,7 @@
 # Phase 3 matching design
 
+Historical design: Phase 4B introduces a planned transaction mode while retaining the cloned-book implementation as a reference. See [Phase 4B design](phase4-optimization-design.md) for the current transaction boundary.
+
 ## Boundary and algorithm
 
 `MatchingEngine` owns one book for one symbol and serializes calls. `submit(Request)` validates side, type, symbol, price, quantity and active ID before accepting a command. A buy crosses asks at or below its limit; a sell crosses bids at or above its limit. A market order ignores limit prices. Each execution consumes the FIFO head at the best opposing price for the smaller remaining quantity and executes at the resting price. An unfilled limit remainder rests; an unfilled market remainder is cancelled. There is no self-trade prevention, risk, transport, persistence, or concurrency.

@@ -12,6 +12,10 @@
 #include <utility>
 #include <vector>
 
+namespace chronos::matching {
+class MatchingEngine;
+}
+
 namespace chronos::orderbook {
 
 using core::OrderId;
@@ -91,6 +95,7 @@ class OrderBook {
     [[nodiscard]] std::size_t ask_levels() const noexcept { return asks_.size(); }
 
   private:
+    friend class chronos::matching::MatchingEngine;
     struct Level {
         Quantity total = 0;
         std::list<OrderSnapshot> orders;
@@ -119,6 +124,24 @@ class OrderBook {
     static std::vector<LevelSnapshot> depth_in(const Map &levels, std::size_t limit);
     template <typename Map>
     static std::vector<OrderSnapshot> orders_in(const Map &levels, Price price);
+
+    // Engine-only traversal; visitor must not mutate this book or retain references.
+    template <typename Visitor> void visit_resting(Side side, Visitor &&visitor) const {
+        const auto visit = [&](const auto &levels) {
+            for (const auto &[price, level] : levels) {
+                (void)price;
+                for (const auto &order : level.orders)
+                    if (!visitor(order))
+                        return;
+            }
+        };
+        if (side == Side::Buy)
+            visit(bids_);
+        else
+            visit(asks_);
+    }
+    // Preconditions: positive quantity <= best head quantity, revision has headroom.
+    void consume_best(Side side, Quantity quantity) noexcept;
 
     SymbolId symbol_;
     Bids bids_;

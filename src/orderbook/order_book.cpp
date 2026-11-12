@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iterator>
 #include <limits>
+#include <type_traits>
 
 namespace chronos::orderbook {
 
@@ -150,6 +151,32 @@ std::optional<Selection> OrderBook::best_resting(Side side) const {
     if (side == Side::Sell && !asks_.empty())
         return Selection{asks_.begin()->second.orders.front(), identity_, revision_};
     return std::nullopt;
+}
+
+void OrderBook::consume_best(Side side, Quantity quantity) noexcept {
+    static_assert(noexcept(IdHash{}(OrderId{0})));
+    static_assert(noexcept(OrderId{0} == OrderId{0}));
+    static_assert(std::is_nothrow_destructible_v<OrderSnapshot>);
+    const auto consume = [&](auto &levels) {
+        auto level_it = levels.begin();
+        auto &level = level_it->second;
+        auto order = level.orders.begin();
+        level.total -= quantity;
+        if (order->quantity == quantity) {
+            const auto index_it = index_.find(order->id);
+            index_.erase(index_it);
+            level.orders.erase(order);
+            if (level.orders.empty())
+                levels.erase(level_it);
+        } else {
+            order->quantity -= quantity;
+        }
+    };
+    if (side == Side::Buy)
+        consume(bids_);
+    else
+        consume(asks_);
+    ++revision_;
 }
 
 Result OrderBook::apply_fill(const Selection &selection, Quantity quantity) {

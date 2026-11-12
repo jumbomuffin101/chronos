@@ -1,5 +1,7 @@
 # Phase 4A benchmark methodology
 
+This describes the historical clone-based baseline. With Phase 4B code, set `CHRONOS_TRANSACTION_MODE=reference` to select the clone implementation; the default is the planned implementation. The saved Phase 4A measurements predate the mode switch. See the Phase 4B report for same-binary comparisons.
+
 ## Build and run
 
 On Linux or WSL2 Ubuntu, install a C++20 compiler, CMake 3.20+, Make, Git and `/usr/bin/time`. The first configure fetches Google Benchmark v1.8.3, pinned to commit `344117638c8ff7e239044fd0fa7085839fc03021`. From the repository root:
@@ -9,17 +11,17 @@ cmake -S . -B build/bench -DCMAKE_BUILD_TYPE=Release -DCHRONOS_ENABLE_BENCHMARKS
 cmake --build build/bench --parallel --target chronos_bench chronos_allocation_probe
 mkdir -p docs/assets/phase4
 # Use a fresh samples path: the executable appends, without a header.
-env CHRONOS_BENCH_SAMPLES=docs/assets/phase4/my-samples.csv \
+env CHRONOS_TRANSACTION_MODE=reference CHRONOS_BENCH_SAMPLES=docs/assets/phase4/my-samples.csv \
   /usr/bin/time -v -o docs/assets/phase4/my-time.txt \
   ./build/bench/benchmarks/chronos_bench \
   --benchmark_filter='EmptyMarket|/100/|/1000/' --benchmark_color=false \
   --benchmark_out=docs/assets/phase4/my-results.json --benchmark_out_format=json
-env CHRONOS_BENCH_SAMPLES=docs/assets/phase4/my-10000-samples.csv \
+env CHRONOS_TRANSACTION_MODE=reference CHRONOS_BENCH_SAMPLES=docs/assets/phase4/my-10000-samples.csv \
   /usr/bin/time -v -o docs/assets/phase4/my-10000-time.txt \
   ./build/bench/benchmarks/chronos_bench \
   --benchmark_filter='Noncrossing/10000/' --benchmark_color=false \
   --benchmark_out=docs/assets/phase4/my-10000-results.json --benchmark_out_format=json
-./build/bench/benchmarks/chronos_allocation_probe > docs/assets/phase4/my-allocations.csv
+env CHRONOS_TRANSACTION_MODE=reference ./build/bench/benchmarks/chronos_allocation_probe > docs/assets/phase4/my-allocations.csv
 python3 benchmarks/summarize.py docs/assets/phase4/my-samples.csv docs/assets/phase4/my-10000-samples.csv --output docs/assets/phase4/my-summary.csv
 ```
 
@@ -43,7 +45,7 @@ When available, `perf`, heap profilers or other native tools should be used on s
 g++ -std=c++20 -O2 -g -pg -Iinclude -Ibuild/bench/_deps/googlebenchmark-src/include \
   benchmarks/matching_bench.cpp src/matching/matching_engine.cpp src/orderbook/order_book.cpp \
   build/bench/_deps/googlebenchmark-build/src/libbenchmark.a -pthread -o build/bench/chronos_bench_gprof
-(cd build/bench && ./chronos_bench_gprof --benchmark_filter='Noncrossing/1000/' --benchmark_color=false > gprof-run.txt && \
+(cd build/bench && env CHRONOS_TRANSACTION_MODE=reference ./chronos_bench_gprof --benchmark_filter='Noncrossing/1000/' --benchmark_color=false > gprof-run.txt && \
   gprof ./chronos_bench_gprof gmon.out > ../../docs/assets/phase4/my-gprof.txt)
 ```
 
