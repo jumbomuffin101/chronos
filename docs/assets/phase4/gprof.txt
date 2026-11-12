@@ -1,0 +1,352 @@
+Flat profile:
+
+Each sample counts as 0.01 seconds.
+  %   cumulative   self              self     total
+ time   seconds   seconds    calls  ms/call  ms/call  name
+ 33.33      0.03     0.03  1903500     0.00     0.00  chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&)
+ 22.22      0.05     0.02  1903902     0.00     0.00  chronos::orderbook::OrderBook::apply_fill(chronos::orderbook::Selection const&, unsigned long)
+ 22.22      0.07     0.02    20736     0.00     0.00  std::_Hashtable<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>, std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, std::allocator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location> >, std::__detail::_Select1st, std::equal_to<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> >, chronos::orderbook::OrderBook::IdHash, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::_M_rehash(unsigned long, unsigned long const&)
+ 11.11      0.08     0.01     3402     0.00     0.00  chronos::matching::MatchingEngine::orders_at(chronos::core::Side, long) const
+ 11.11      0.09     0.01     3402     0.00     0.02  chronos::orderbook::OrderBook::clone() const
+  0.00      0.09     0.00    10017     0.00     0.00  std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::operator[](std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&)
+  0.00      0.09     0.00     4206     0.00     0.00  void std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> >::_M_realloc_insert<chronos::core::Trade>(__gnu_cxx::__normal_iterator<chronos::core::Trade*, std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> > >, chronos::core::Trade&&)
+  0.00      0.09     0.00     4005     0.00     0.00  chronos::orderbook::OrderBook::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const
+  0.00      0.09     0.00     3405     0.00     0.00  std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_destroy()
+  0.00      0.09     0.00     3405     0.00     0.00  std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose()
+  0.00      0.09     0.00     3201     0.00     0.03  chronos::matching::MatchingEngine::submit(chronos::matching::Request const&)
+  0.00      0.09     0.00     3201     0.00     0.00  chronos::orderbook::OrderBook::add(chronos::core::Order const&)
+  0.00      0.09     0.00     3201     0.00     0.00  chronos::orderbook::OrderBook::best_resting(chronos::core::Side) const
+  0.00      0.09     0.00     3000     0.00     0.03  (anonymous namespace)::insert(chronos::matching::MatchingEngine&, unsigned long, long, unsigned long)
+  0.00      0.09     0.00      804     0.00     0.00  chronos::matching::MatchingEngine::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const
+  0.00      0.09     0.00      402     0.00     0.00  chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&)
+  0.00      0.09     0.00      204     0.00     0.03  (anonymous namespace)::Scenario::run()
+  0.00      0.09     0.00      201     0.00     0.02  (anonymous namespace)::Scenario::restore_and_verify()
+  0.00      0.09     0.00      201     0.00     0.02  chronos::matching::MatchingEngine::cancel_resting(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>)
+  0.00      0.09     0.00      201     0.00     0.00  chronos::orderbook::OrderBook::cancel(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>)
+  0.00      0.09     0.00      201     0.00     0.00  std::vector<chronos::orderbook::LevelSnapshot, std::allocator<chronos::orderbook::LevelSnapshot> > chronos::orderbook::OrderBook::depth_in<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > const&, unsigned long)
+  0.00      0.09     0.00      201     0.00     0.00  chronos::matching::MatchingEngine::depth(chronos::core::Side, unsigned long) const
+  0.00      0.09     0.00      201     0.00     0.00  chronos::orderbook::OrderBook::depth(chronos::core::Side, unsigned long) const
+  0.00      0.09     0.00      201     0.00     0.00  std::_Hashtable<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>, std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, std::allocator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location> >, std::__detail::_Select1st, std::equal_to<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> >, chronos::orderbook::OrderBook::IdHash, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::erase(std::__detail::_Node_const_iterator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, false, false>)
+  0.00      0.09     0.00       58     0.00     0.00  std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_dispose()
+  0.00      0.09     0.00       50     0.00     0.00  std::_Rb_tree<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter>, std::_Select1st<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::_M_get_insert_hint_unique_pos(std::_Rb_tree_const_iterator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
+  0.00      0.09     0.00       14     0.00     0.00  frame_dummy
+  0.00      0.09     0.00       10     0.00     0.00  std::_Rb_tree<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter>, std::_Select1st<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::_M_get_insert_unique_pos(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&)
+  0.00      0.09     0.00        3     0.00     0.00  (anonymous namespace)::Noncrossing(benchmark::State&)
+  0.00      0.09     0.00        3     0.00    30.00  (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*)
+  0.00      0.09     0.00        3     0.00     0.03  (anonymous namespace)::Scenario::~Scenario()
+  0.00      0.09     0.00        3     0.00     0.00  chronos::matching::MatchingEngine::MatchingEngine(chronos::core::Identifier<chronos::core::SymbolIdTag, unsigned int>, chronos::matching::Counters)
+
+ %         the percentage of the total running time of the
+time       program used by this function.
+
+cumulative a running sum of the number of seconds accounted
+ seconds   for by this function and those listed above it.
+
+ self      the number of seconds accounted for by this
+seconds    function alone.  This is the major sort for this
+           listing.
+
+calls      the number of times this function was invoked, if
+           this function is profiled, else blank.
+
+ self      the average number of milliseconds spent in this
+ms/call    function per call, if this function is profiled,
+	   else blank.
+
+ total     the average number of milliseconds spent in this
+ms/call    function and its descendents per call, if this
+	   function is profiled, else blank.
+
+name       the name of the function.  This is the minor sort
+           for this listing. The index shows the location of
+	   the function in the gprof listing. If the index is
+	   in parenthesis it shows where it would appear in
+	   the gprof listing if it were to be printed.
+
+Copyright (C) 2012-2024 Free Software Foundation, Inc.
+
+Copying and distribution of this file, with or without modification,
+are permitted in any medium without royalty provided the copyright
+notice and this notice are preserved.
+
+		     Call graph (explanation follows)
+
+
+granularity: each sample hit covers 4 byte(s) for 11.11% of 0.09 seconds
+
+index % time    self  children    called     name
+                0.00    0.09       3/3           benchmark::internal::BenchmarkInstance::Run(long, int, benchmark::internal::ThreadTimer*, benchmark::internal::ThreadManager*, benchmark::internal::PerfCountersMeasurement*) const [2]
+[1]    100.0    0.00    0.09       3         (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) [1]
+                0.00    0.08    3000/3000        (anonymous namespace)::insert(chronos::matching::MatchingEngine&, unsigned long, long, unsigned long) [4]
+                0.00    0.01     201/204         (anonymous namespace)::Scenario::run() [10]
+                0.00    0.00     201/201         (anonymous namespace)::Scenario::restore_and_verify() [11]
+                0.00    0.00       3/3           (anonymous namespace)::Scenario::~Scenario() [14]
+                0.00    0.00      15/10017       std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::operator[](std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&) [23]
+                0.00    0.00       3/3           chronos::matching::MatchingEngine::MatchingEngine(chronos::core::Identifier<chronos::core::SymbolIdTag, unsigned int>, chronos::matching::Counters) [39]
+                0.00    0.00       3/14          frame_dummy [16]
+-----------------------------------------------
+                                                 <spontaneous>
+[2]    100.0    0.00    0.09                 benchmark::internal::BenchmarkInstance::Run(long, int, benchmark::internal::ThreadTimer*, benchmark::internal::ThreadManager*, benchmark::internal::PerfCountersMeasurement*) const [2]
+                0.00    0.09       3/3           (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) [1]
+                0.00    0.00       3/3           (anonymous namespace)::Noncrossing(benchmark::State&) [38]
+-----------------------------------------------
+                0.00    0.01     201/3201        (anonymous namespace)::Scenario::run() [10]
+                0.00    0.08    3000/3201        (anonymous namespace)::insert(chronos::matching::MatchingEngine&, unsigned long, long, unsigned long) [4]
+[3]     94.8    0.00    0.09    3201         chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [3]
+                0.01    0.07    3201/3402        chronos::orderbook::OrderBook::clone() const [5]
+                0.01    0.00    3402/3402        chronos::matching::MatchingEngine::orders_at(chronos::core::Side, long) const [9]
+                0.00    0.00    3201/3201        chronos::orderbook::OrderBook::add(chronos::core::Order const&) [13]
+                0.00    0.00    6402/10017       std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::operator[](std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&) [23]
+                0.00    0.00    3201/4005        chronos::orderbook::OrderBook::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const [25]
+                0.00    0.00    3201/3201        chronos::orderbook::OrderBook::best_resting(chronos::core::Side) const [28]
+-----------------------------------------------
+                0.00    0.08    3000/3000        (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) [1]
+[4]     88.8    0.00    0.08    3000         (anonymous namespace)::insert(chronos::matching::MatchingEngine&, unsigned long, long, unsigned long) [4]
+                0.00    0.08    3000/3201        chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [3]
+-----------------------------------------------
+                0.00    0.00     201/3402        chronos::matching::MatchingEngine::cancel_resting(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [12]
+                0.01    0.07    3201/3402        chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [3]
+[5]     88.8    0.01    0.07    3402         chronos::orderbook::OrderBook::clone() const [5]
+                0.03    0.04 1900500/1903500     chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [6]
+                0.00    0.00     201/402         chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [15]
+-----------------------------------------------
+                0.00    0.00    3000/1903500     chronos::orderbook::OrderBook::add(chronos::core::Order const&) [13]
+                0.03    0.04 1900500/1903500     chronos::orderbook::OrderBook::clone() const [5]
+[6]     77.8    0.03    0.04 1903500         chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [6]
+                0.02    0.02 1903500/1903902     chronos::orderbook::OrderBook::apply_fill(chronos::orderbook::Selection const&, unsigned long) [7]
+                0.00    0.00    3402/4206        void std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> >::_M_realloc_insert<chronos::core::Trade>(__gnu_cxx::__normal_iterator<chronos::core::Trade*, std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> > >, chronos::core::Trade&&) [24]
+-----------------------------------------------
+                0.00    0.00     402/1903902     chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [15]
+                0.02    0.02 1903500/1903902     chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [6]
+[7]     44.4    0.02    0.02 1903902         chronos::orderbook::OrderBook::apply_fill(chronos::orderbook::Selection const&, unsigned long) [7]
+                0.02    0.00   20736/20736       std::_Hashtable<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>, std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, std::allocator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location> >, std::__detail::_Select1st, std::equal_to<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> >, chronos::orderbook::OrderBook::IdHash, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::_M_rehash(unsigned long, unsigned long const&) [8]
+-----------------------------------------------
+                0.02    0.00   20736/20736       chronos::orderbook::OrderBook::apply_fill(chronos::orderbook::Selection const&, unsigned long) [7]
+[8]     22.2    0.02    0.00   20736         std::_Hashtable<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>, std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, std::allocator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location> >, std::__detail::_Select1st, std::equal_to<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> >, chronos::orderbook::OrderBook::IdHash, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::_M_rehash(unsigned long, unsigned long const&) [8]
+-----------------------------------------------
+                0.01    0.00    3402/3402        chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [3]
+[9]     11.1    0.01    0.00    3402         chronos::matching::MatchingEngine::orders_at(chronos::core::Side, long) const [9]
+                0.00    0.00    3201/3405        std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose() [27]
+                0.00    0.00    3201/3405        std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_destroy() [26]
+                0.00    0.00    3198/10017       std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::operator[](std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&) [23]
+-----------------------------------------------
+                0.00    0.00       3/204         (anonymous namespace)::Scenario::~Scenario() [14]
+                0.00    0.01     201/204         (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) [1]
+[10]     5.9    0.00    0.01     204         (anonymous namespace)::Scenario::run() [10]
+                0.00    0.01     201/3201        chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [3]
+-----------------------------------------------
+                0.00    0.00     201/201         (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) [1]
+[11]     5.2    0.00    0.00     201         (anonymous namespace)::Scenario::restore_and_verify() [11]
+                0.00    0.00     201/201         chronos::matching::MatchingEngine::cancel_resting(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [12]
+                0.00    0.00     804/804         chronos::matching::MatchingEngine::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const [29]
+                0.00    0.00     201/201         chronos::matching::MatchingEngine::depth(chronos::core::Side, unsigned long) const [32]
+-----------------------------------------------
+                0.00    0.00     201/201         (anonymous namespace)::Scenario::restore_and_verify() [11]
+[12]     5.2    0.00    0.00     201         chronos::matching::MatchingEngine::cancel_resting(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [12]
+                0.00    0.00     201/3402        chronos::orderbook::OrderBook::clone() const [5]
+                0.00    0.00     402/10017       std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::operator[](std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&) [23]
+                0.00    0.00     201/201         chronos::orderbook::OrderBook::cancel(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [30]
+                0.00    0.00     201/3405        std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose() [27]
+                0.00    0.00     201/3405        std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_destroy() [26]
+-----------------------------------------------
+                0.00    0.00    3201/3201        chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [3]
+[13]     0.1    0.00    0.00    3201         chronos::orderbook::OrderBook::add(chronos::core::Order const&) [13]
+                0.00    0.00    3000/1903500     chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [6]
+                0.00    0.00     201/402         chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [15]
+-----------------------------------------------
+                0.00    0.00       3/3           (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) [1]
+[14]     0.1    0.00    0.00       3         (anonymous namespace)::Scenario::~Scenario() [14]
+                0.00    0.00       3/204         (anonymous namespace)::Scenario::run() [10]
+                0.00    0.00       3/3405        std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_destroy() [26]
+                0.00    0.00       3/3405        std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose() [27]
+-----------------------------------------------
+                0.00    0.00     201/402         chronos::orderbook::OrderBook::add(chronos::core::Order const&) [13]
+                0.00    0.00     201/402         chronos::orderbook::OrderBook::clone() const [5]
+[15]     0.0    0.00    0.00     402         chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [15]
+                0.00    0.00     402/1903902     chronos::orderbook::OrderBook::apply_fill(chronos::orderbook::Selection const&, unsigned long) [7]
+                0.00    0.00     402/4206        void std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> >::_M_realloc_insert<chronos::core::Trade>(__gnu_cxx::__normal_iterator<chronos::core::Trade*, std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> > >, chronos::core::Trade&&) [24]
+-----------------------------------------------
+                                  16             frame_dummy [16]
+                0.00    0.00       3/14          (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) [1]
+                0.00    0.00      11/14          __static_initialization_and_destruction_0() [58]
+[16]     0.0    0.00    0.00      14+16      frame_dummy [16]
+                                  16             frame_dummy [16]
+-----------------------------------------------
+                0.00    0.00      15/10017       (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) [1]
+                0.00    0.00     402/10017       chronos::matching::MatchingEngine::cancel_resting(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [12]
+                0.00    0.00    3198/10017       chronos::matching::MatchingEngine::orders_at(chronos::core::Side, long) const [9]
+                0.00    0.00    6402/10017       chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [3]
+[23]     0.0    0.00    0.00   10017         std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::operator[](std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&) [23]
+                0.00    0.00      15/50          std::_Rb_tree<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter>, std::_Select1st<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::_M_get_insert_hint_unique_pos(std::_Rb_tree_const_iterator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) [36]
+                0.00    0.00       3/10          std::_Rb_tree<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter>, std::_Select1st<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::_M_get_insert_unique_pos(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) [37]
+-----------------------------------------------
+                                4005             void std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> >::_M_realloc_insert<chronos::core::Trade>(__gnu_cxx::__normal_iterator<chronos::core::Trade*, std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> > >, chronos::core::Trade&&) [24]
+                0.00    0.00     402/4206        chronos::orderbook::OrderBook::cancel(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [30]
+                0.00    0.00     402/4206        chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [15]
+                0.00    0.00    3402/4206        chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [6]
+[24]     0.0    0.00    0.00    4206+4005    void std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> >::_M_realloc_insert<chronos::core::Trade>(__gnu_cxx::__normal_iterator<chronos::core::Trade*, std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> > >, chronos::core::Trade&&) [24]
+                                4005             void std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> >::_M_realloc_insert<chronos::core::Trade>(__gnu_cxx::__normal_iterator<chronos::core::Trade*, std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> > >, chronos::core::Trade&&) [24]
+-----------------------------------------------
+                0.00    0.00     804/4005        chronos::matching::MatchingEngine::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const [29]
+                0.00    0.00    3201/4005        chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [3]
+[25]     0.0    0.00    0.00    4005         chronos::orderbook::OrderBook::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const [25]
+-----------------------------------------------
+                0.00    0.00       3/3405        (anonymous namespace)::Scenario::~Scenario() [14]
+                0.00    0.00     201/3405        chronos::matching::MatchingEngine::cancel_resting(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [12]
+                0.00    0.00    3201/3405        chronos::matching::MatchingEngine::orders_at(chronos::core::Side, long) const [9]
+[26]     0.0    0.00    0.00    3405         std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_destroy() [26]
+-----------------------------------------------
+                0.00    0.00       3/3405        (anonymous namespace)::Scenario::~Scenario() [14]
+                0.00    0.00     201/3405        chronos::matching::MatchingEngine::cancel_resting(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [12]
+                0.00    0.00    3201/3405        chronos::matching::MatchingEngine::orders_at(chronos::core::Side, long) const [9]
+[27]     0.0    0.00    0.00    3405         std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose() [27]
+-----------------------------------------------
+                0.00    0.00    3201/3201        chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [3]
+[28]     0.0    0.00    0.00    3201         chronos::orderbook::OrderBook::best_resting(chronos::core::Side) const [28]
+-----------------------------------------------
+                0.00    0.00     804/804         (anonymous namespace)::Scenario::restore_and_verify() [11]
+[29]     0.0    0.00    0.00     804         chronos::matching::MatchingEngine::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const [29]
+                0.00    0.00     804/4005        chronos::orderbook::OrderBook::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const [25]
+-----------------------------------------------
+                0.00    0.00     201/201         chronos::matching::MatchingEngine::cancel_resting(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [12]
+[30]     0.0    0.00    0.00     201         chronos::orderbook::OrderBook::cancel(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [30]
+                0.00    0.00     402/4206        void std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> >::_M_realloc_insert<chronos::core::Trade>(__gnu_cxx::__normal_iterator<chronos::core::Trade*, std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> > >, chronos::core::Trade&&) [24]
+                0.00    0.00     201/201         std::_Hashtable<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>, std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, std::allocator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location> >, std::__detail::_Select1st, std::equal_to<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> >, chronos::orderbook::OrderBook::IdHash, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::erase(std::__detail::_Node_const_iterator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, false, false>) [34]
+-----------------------------------------------
+                0.00    0.00     201/201         chronos::orderbook::OrderBook::depth(chronos::core::Side, unsigned long) const [33]
+[31]     0.0    0.00    0.00     201         std::vector<chronos::orderbook::LevelSnapshot, std::allocator<chronos::orderbook::LevelSnapshot> > chronos::orderbook::OrderBook::depth_in<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > const&, unsigned long) [31]
+-----------------------------------------------
+                0.00    0.00     201/201         (anonymous namespace)::Scenario::restore_and_verify() [11]
+[32]     0.0    0.00    0.00     201         chronos::matching::MatchingEngine::depth(chronos::core::Side, unsigned long) const [32]
+                0.00    0.00     201/201         chronos::orderbook::OrderBook::depth(chronos::core::Side, unsigned long) const [33]
+-----------------------------------------------
+                0.00    0.00     201/201         chronos::matching::MatchingEngine::depth(chronos::core::Side, unsigned long) const [32]
+[33]     0.0    0.00    0.00     201         chronos::orderbook::OrderBook::depth(chronos::core::Side, unsigned long) const [33]
+                0.00    0.00     201/201         std::vector<chronos::orderbook::LevelSnapshot, std::allocator<chronos::orderbook::LevelSnapshot> > chronos::orderbook::OrderBook::depth_in<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > const&, unsigned long) [31]
+-----------------------------------------------
+                0.00    0.00     201/201         chronos::orderbook::OrderBook::cancel(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [30]
+[34]     0.0    0.00    0.00     201         std::_Hashtable<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>, std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, std::allocator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location> >, std::__detail::_Select1st, std::equal_to<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> >, chronos::orderbook::OrderBook::IdHash, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::erase(std::__detail::_Node_const_iterator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, false, false>) [34]
+-----------------------------------------------
+                0.00    0.00       3/58          benchmark::internal::BenchmarkFamilies::FindBenchmarks(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::vector<benchmark::internal::BenchmarkInstance, std::allocator<benchmark::internal::BenchmarkInstance> >*, std::ostream*) [211]
+                0.00    0.00      11/58          __static_initialization_and_destruction_0() [58]
+                0.00    0.00      44/58          benchmark::internal::Benchmark::Benchmark(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) [263]
+[35]     0.0    0.00    0.00      58         std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_dispose() [35]
+-----------------------------------------------
+                0.00    0.00      15/50          std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::operator[](std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&) [23]
+                0.00    0.00      15/50          benchmark::internal::Increment(std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >*, std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > > const&) [266]
+                0.00    0.00      20/50          benchmark::ComputeStats(std::vector<benchmark::BenchmarkReporter::Run, std::allocator<benchmark::BenchmarkReporter::Run> > const&) [87]
+[36]     0.0    0.00    0.00      50         std::_Rb_tree<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter>, std::_Select1st<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::_M_get_insert_hint_unique_pos(std::_Rb_tree_const_iterator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) [36]
+-----------------------------------------------
+                0.00    0.00       3/10          std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::operator[](std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&) [23]
+                0.00    0.00       3/10          benchmark::internal::Increment(std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >*, std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > > const&) [266]
+                0.00    0.00       4/10          benchmark::ComputeStats(std::vector<benchmark::BenchmarkReporter::Run, std::allocator<benchmark::BenchmarkReporter::Run> > const&) [87]
+[37]     0.0    0.00    0.00      10         std::_Rb_tree<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter>, std::_Select1st<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::_M_get_insert_unique_pos(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) [37]
+-----------------------------------------------
+                0.00    0.00       3/3           benchmark::internal::BenchmarkInstance::Run(long, int, benchmark::internal::ThreadTimer*, benchmark::internal::ThreadManager*, benchmark::internal::PerfCountersMeasurement*) const [2]
+[38]     0.0    0.00    0.00       3         (anonymous namespace)::Noncrossing(benchmark::State&) [38]
+-----------------------------------------------
+                0.00    0.00       3/3           (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) [1]
+[39]     0.0    0.00    0.00       3         chronos::matching::MatchingEngine::MatchingEngine(chronos::core::Identifier<chronos::core::SymbolIdTag, unsigned int>, chronos::matching::Counters) [39]
+-----------------------------------------------
+
+ This table describes the call tree of the program, and was sorted by
+ the total amount of time spent in each function and its children.
+
+ Each entry in this table consists of several lines.  The line with the
+ index number at the left hand margin lists the current function.
+ The lines above it list the functions that called this function,
+ and the lines below it list the functions this one called.
+ This line lists:
+     index	A unique number given to each element of the table.
+		Index numbers are sorted numerically.
+		The index number is printed next to every function name so
+		it is easier to look up where the function is in the table.
+
+     % time	This is the percentage of the `total' time that was spent
+		in this function and its children.  Note that due to
+		different viewpoints, functions excluded by options, etc,
+		these numbers will NOT add up to 100%.
+
+     self	This is the total amount of time spent in this function.
+
+     children	This is the total amount of time propagated into this
+		function by its children.
+
+     called	This is the number of times the function was called.
+		If the function called itself recursively, the number
+		only includes non-recursive calls, and is followed by
+		a `+' and the number of recursive calls.
+
+     name	The name of the current function.  The index number is
+		printed after it.  If the function is a member of a
+		cycle, the cycle number is printed between the
+		function's name and the index number.
+
+
+ For the function's parents, the fields have the following meanings:
+
+     self	This is the amount of time that was propagated directly
+		from the function into this parent.
+
+     children	This is the amount of time that was propagated from
+		the function's children into this parent.
+
+     called	This is the number of times this parent called the
+		function `/' the total number of times the function
+		was called.  Recursive calls to the function are not
+		included in the number after the `/'.
+
+     name	This is the name of the parent.  The parent's index
+		number is printed after it.  If the parent is a
+		member of a cycle, the cycle number is printed between
+		the name and the index number.
+
+ If the parents of the function cannot be determined, the word
+ `<spontaneous>' is printed in the `name' field, and all the other
+ fields are blank.
+
+ For the function's children, the fields have the following meanings:
+
+     self	This is the amount of time that was propagated directly
+		from the child into the function.
+
+     children	This is the amount of time that was propagated from the
+		child's children to the function.
+
+     called	This is the number of times the function called
+		this child `/' the total number of times the child
+		was called.  Recursive calls by the child are not
+		listed in the number after the `/'.
+
+     name	This is the name of the child.  The child's index
+		number is printed after it.  If the child is a
+		member of a cycle, the cycle number is printed
+		between the name and the index number.
+
+ If there are any cycles (circles) in the call graph, there is an
+ entry for the cycle-as-a-whole.  This entry shows who called the
+ cycle (as parents) and the members of the cycle (as children.)
+ The `+' recursive calls entry shows the number of function calls that
+ were internal to the cycle, and the calls entry for each member shows,
+ for that member, how many times it was called from other members of
+ the cycle.
+
+Copyright (C) 2012-2024 Free Software Foundation, Inc.
+
+Copying and distribution of this file, with or without modification,
+are permitted in any medium without royalty provided the copyright
+notice and this notice are preserved.
+
+Index by function name
+
+  [38] (anonymous namespace)::Noncrossing(benchmark::State&) (matching_bench.cpp) [30] chronos::orderbook::OrderBook::cancel(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [34] std::_Hashtable<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>, std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, std::allocator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location> >, std::__detail::_Select1st, std::equal_to<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> >, chronos::orderbook::OrderBook::IdHash, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::erase(std::__detail::_Node_const_iterator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, false, false>)
+   [1] (anonymous namespace)::run_benchmark(benchmark::State&, (anonymous namespace)::Workload, char const*) (matching_bench.cpp) [6] chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [8] std::_Hashtable<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>, std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location>, std::allocator<std::pair<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> const, chronos::orderbook::OrderBook::Location> >, std::__detail::_Select1st, std::equal_to<chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long> >, chronos::orderbook::OrderBook::IdHash, std::__detail::_Mod_range_hashing, std::__detail::_Default_ranged_hash, std::__detail::_Prime_rehash_policy, std::__detail::_Hashtable_traits<false, false, true> >::_M_rehash(unsigned long, unsigned long const&)
+   [4] (anonymous namespace)::insert(chronos::matching::MatchingEngine&, unsigned long, long, unsigned long) (matching_bench.cpp) [15] chronos::orderbook::Result chronos::orderbook::OrderBook::insert<std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::greater<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > >&, chronos::orderbook::OrderSnapshot const&) [26] std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_destroy()
+  [11] (anonymous namespace)::Scenario::restore_and_verify() (matching_bench.cpp) [31] std::vector<chronos::orderbook::LevelSnapshot, std::allocator<chronos::orderbook::LevelSnapshot> > chronos::orderbook::OrderBook::depth_in<std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > >(std::map<long, chronos::orderbook::OrderBook::Level, std::less<long>, std::allocator<std::pair<long const, chronos::orderbook::OrderBook::Level> > > const&, unsigned long) [27] std::_Sp_counted_ptr_inplace<int const, std::allocator<void>, (__gnu_cxx::_Lock_policy)2>::_M_dispose()
+  [10] (anonymous namespace)::Scenario::run() (matching_bench.cpp) [29] chronos::matching::MatchingEngine::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const [23] std::map<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, benchmark::Counter, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::operator[](std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >&&)
+  [14] (anonymous namespace)::Scenario::~Scenario() (matching_bench.cpp) [32] chronos::matching::MatchingEngine::depth(chronos::core::Side, unsigned long) const [24] void std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> >::_M_realloc_insert<chronos::core::Trade>(__gnu_cxx::__normal_iterator<chronos::core::Trade*, std::vector<chronos::core::Trade, std::allocator<chronos::core::Trade> > >, chronos::core::Trade&&)
+  [12] chronos::matching::MatchingEngine::cancel_resting(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) [9] chronos::matching::MatchingEngine::orders_at(chronos::core::Side, long) const [35] std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >::_M_dispose()
+   [3] chronos::matching::MatchingEngine::submit(chronos::matching::Request const&) [28] chronos::orderbook::OrderBook::best_resting(chronos::core::Side) const [37] std::_Rb_tree<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter>, std::_Select1st<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::_M_get_insert_unique_pos(std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) (stl_tree.h)
+  [39] chronos::matching::MatchingEngine::MatchingEngine(chronos::core::Identifier<chronos::core::SymbolIdTag, unsigned int>, chronos::matching::Counters) [25] chronos::orderbook::OrderBook::find(chronos::core::Identifier<chronos::core::OrderIdTag, unsigned long>) const [36] std::_Rb_tree<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter>, std::_Select1st<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::less<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > >, std::allocator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> > >::_M_get_insert_hint_unique_pos(std::_Rb_tree_const_iterator<std::pair<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const, benchmark::Counter> >, std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > const&) (stl_tree.h)
+   [7] chronos::orderbook::OrderBook::apply_fill(chronos::orderbook::Selection const&, unsigned long) [5] chronos::orderbook::OrderBook::clone() const [16] frame_dummy
+  [13] chronos::orderbook::OrderBook::add(chronos::core::Order const&) [33] chronos::orderbook::OrderBook::depth(chronos::core::Side, unsigned long) const

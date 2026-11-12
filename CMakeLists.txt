@@ -45,7 +45,7 @@ if(CHRONOS_ENABLE_BENCHMARKS)
   set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
   FetchContent_Declare(googlebenchmark
     GIT_REPOSITORY https://github.com/google/benchmark.git
-    GIT_TAG v1.8.3
-    GIT_SHALLOW TRUE)
+    GIT_TAG 344117638c8ff7e239044fd0fa7085839fc03021)
   FetchContent_MakeAvailable(googlebenchmark)
+  add_subdirectory(benchmarks)
 endif()

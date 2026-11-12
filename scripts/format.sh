@@ -10,4 +10,4 @@ case "${1:---check}" in
     --fix) mode=(-i) ;;
     *) echo "Usage: $0 [--check|--fix]" >&2; exit 2 ;;
 esac
-find "$root/include" "$root/src" "$root/apps" "$root/tests" -type f \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 -r clang-format "${mode[@]}"
+find "$root/include" "$root/src" "$root/apps" "$root/tests" "$root/benchmarks" -type f \( -name '*.hpp' -o -name '*.cpp' \) -print0 | xargs -0 -r clang-format "${mode[@]}"

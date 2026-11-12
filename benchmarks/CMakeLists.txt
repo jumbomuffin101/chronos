@@ -1,0 +1,7 @@
+add_executable(chronos_bench matching_bench.cpp)
+target_link_libraries(chronos_bench PRIVATE chronos_core benchmark::benchmark)
+chronos_configure_target(chronos_bench)
+
+add_executable(chronos_allocation_probe allocation_probe.cpp)
+target_link_libraries(chronos_allocation_probe PRIVATE chronos_core)
+chronos_configure_target(chronos_allocation_probe)
