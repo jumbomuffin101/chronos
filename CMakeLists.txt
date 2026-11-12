@@ -7,7 +7,7 @@ include(FetchContent)
 option(CHRONOS_ENABLE_SANITIZERS "Enable address and undefined behavior sanitizers" OFF)
 option(CHRONOS_ENABLE_BENCHMARKS "Fetch Google Benchmark for future benchmarks" OFF)
 
-add_library(chronos_core src/orderbook/order_book.cpp)
+add_library(chronos_core src/orderbook/order_book.cpp src/matching/matching_engine.cpp)
 target_compile_features(chronos_core PUBLIC cxx_std_20)
 target_include_directories(chronos_core PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 

@@ -48,14 +48,19 @@ Result OrderBook::add(const core::Order &order) {
         return Result::InvalidModification;
     if (index_.contains(order.id()))
         return Result::DuplicateId;
+    if (revision_ == std::numeric_limits<std::uint64_t>::max())
+        return Result::Overflow;
     const OrderSnapshot snapshot{
         order.id(),      order.symbol(), order.side(), order.price(), order.remaining_quantity(),
         order.sequence()};
+    Result result = Result::InvalidModification;
     if (order.side() == Side::Buy)
-        return insert(bids_, snapshot);
-    if (order.side() == Side::Sell)
-        return insert(asks_, snapshot);
-    return Result::InvalidModification;
+        result = insert(bids_, snapshot);
+    else if (order.side() == Side::Sell)
+        result = insert(asks_, snapshot);
+    if (result == Result::Success)
+        ++revision_;
+    return result;
 }
 
 template <typename Map> void OrderBook::erase(Map &levels, const Location &location) {
@@ -70,12 +75,15 @@ Result OrderBook::cancel(OrderId id) {
     auto it = index_.find(id);
     if (it == index_.end())
         return Result::NotFound;
+    if (revision_ == std::numeric_limits<std::uint64_t>::max())
+        return Result::Overflow;
     const Location location = it->second;
     index_.erase(it);
     if (location.side == Side::Buy)
         erase(bids_, location);
     else
         erase(asks_, location);
+    ++revision_;
     return Result::Success;
 }
 
@@ -126,10 +134,64 @@ Result OrderBook::modify(OrderId id, Price price, Quantity quantity) {
         return Result::InvalidPrice;
     if (quantity == 0)
         return Result::InvalidQuantity;
+    if (revision_ == std::numeric_limits<std::uint64_t>::max())
+        return Result::Overflow;
     auto &location = it->second;
-    if (location.side == Side::Buy)
-        return change(bids_, location, price, quantity);
-    return change(asks_, location, price, quantity);
+    const auto result = location.side == Side::Buy ? change(bids_, location, price, quantity)
+                                                   : change(asks_, location, price, quantity);
+    if (result == Result::Success)
+        ++revision_;
+    return result;
+}
+
+std::optional<Selection> OrderBook::best_resting(Side side) const {
+    if (side == Side::Buy && !bids_.empty())
+        return Selection{bids_.begin()->second.orders.front(), identity_, revision_};
+    if (side == Side::Sell && !asks_.empty())
+        return Selection{asks_.begin()->second.orders.front(), identity_, revision_};
+    return std::nullopt;
+}
+
+Result OrderBook::apply_fill(const Selection &selection, Quantity quantity) {
+    if (selection.identity_ != identity_ || selection.revision_ != revision_)
+        return Result::StaleSelection;
+    if (quantity == 0 || quantity > selection.order_.quantity)
+        return Result::InvalidQuantity;
+    if (revision_ == std::numeric_limits<std::uint64_t>::max())
+        return Result::Overflow;
+    auto it = index_.find(selection.order_.id);
+    if (it == index_.end())
+        return Result::StaleSelection;
+    auto &location = it->second;
+    if (quantity == location.order->quantity) {
+        const Location old = location;
+        index_.erase(it);
+        if (old.side == Side::Buy)
+            erase(bids_, old);
+        else
+            erase(asks_, old);
+    } else {
+        location.order->quantity -= quantity;
+        location.level->total -= quantity;
+    }
+    ++revision_;
+    return Result::Success;
+}
+
+std::unique_ptr<OrderBook> OrderBook::clone() const {
+    auto result = std::make_unique<OrderBook>(symbol_);
+    for (const auto &[price, level] : bids_) {
+        (void)price;
+        for (const auto &order : level.orders)
+            (void)result->insert(result->bids_, order);
+    }
+    for (const auto &[price, level] : asks_) {
+        (void)price;
+        for (const auto &order : level.orders)
+            (void)result->insert(result->asks_, order);
+    }
+    result->revision_ = revision_;
+    return result;
 }
 
 std::optional<OrderSnapshot> OrderBook::find(OrderId id) const {

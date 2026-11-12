@@ -1,3 +1,4 @@
+#include "chronos/matching/matching_engine.hpp"
 #include "chronos/orderbook/order_book.hpp"
 
 #include <cstdlib>
@@ -103,3 +104,47 @@ TEST(OrderBookAllocation, InsertNewLevelRollsBack) { exercise_failures(false, fa
 TEST(OrderBookAllocation, InsertExistingLevelRollsBack) { exercise_failures(false, true); }
 TEST(OrderBookAllocation, MoveToNewLevelRollsBack) { exercise_failures(true, false); }
 TEST(OrderBookAllocation, MoveToExistingLevelRollsBack) { exercise_failures(true, true); }
+
+TEST(MatchingAllocation, MultiFillCommandIsAtomic) {
+    using namespace chronos::matching;
+    int failures = 0;
+    bool completed = false;
+    for (int fail_at = 0; fail_at < 128 && !completed; ++fail_at) {
+        MatchingEngine engine{SymbolId{1}};
+        ASSERT_EQ(
+            engine.submit({OrderId{1}, SymbolId{1}, Side::Sell, OrderType::Limit, 10, 2}).error,
+            Error::None);
+        ASSERT_EQ(
+            engine.submit({OrderId{2}, SymbolId{1}, Side::Sell, OrderType::Limit, 11, 2}).error,
+            Error::None);
+        const auto before = engine.counters();
+        bool threw = false;
+        allocations_until_failure = fail_at;
+        try {
+            auto out = engine.submit({OrderId{3}, SymbolId{1}, Side::Buy, OrderType::Limit, 11, 5});
+            allocations_until_failure = -1;
+            EXPECT_EQ(out.error, Error::None);
+            EXPECT_EQ(out.trades.size(), 2U);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            threw = true;
+        } catch (...) {
+            allocations_until_failure = -1;
+            throw;
+        }
+        if (threw) {
+            ++failures;
+            ASSERT_TRUE(engine.find(OrderId{1}));
+            ASSERT_TRUE(engine.find(OrderId{2}));
+            EXPECT_EQ(engine.find(OrderId{1})->quantity, 2U);
+            EXPECT_EQ(engine.find(OrderId{2})->quantity, 2U);
+            EXPECT_FALSE(engine.find(OrderId{3}));
+            EXPECT_EQ(engine.counters().command, before.command);
+            EXPECT_EQ(engine.counters().event, before.event);
+            EXPECT_EQ(engine.counters().trade, before.trade);
+        }
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GE(failures, 5);
+}

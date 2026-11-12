@@ -1,0 +1,17 @@
+# Phase 3 implementation report
+
+## Implementation and decisions
+
+The matching engine accepts typed limit and market requests, matches best price then FIFO at the resting price, generates trades and participant-specific execution reports, and rests limit remainders or cancels market remainders. The book exposes opaque, revision-bound best-order selections and checked partial/full fill operations. Selections cannot cross book instances or survive any successful mutation, including cancellation and ID reuse. Public book inspection returns value snapshots. Book maintenance remains separate from exchange-level cancel/replace semantics.
+
+Command, event and trade counters are separate, checked and deterministic. Rejections return a typed error and one unsequenced rejection report, without consuming counters. A private cloned book, local counters and output vectors form the command workspace; swap commits only after the entire command succeeds. Allocation exceptions propagate without mutating committed state. See [matching design](phase3-matching-design.md) for the full contract, sequence order and complexity.
+
+## Validation
+
+On WSL Ubuntu 24.04 with GCC 13.3 and CMake 3.28, final Debug, Release and ASan/UBSan builds each passed **35 of 35 CTest cases** (105 successful test executions across the final matrix). Tests cover matching in both directions, price and FIFO priority, partial and multi-level fills, market residuals, validation, stale selections, max quantities, exact event order, counter and aggregate exhaustion, deterministic repeated streams, and injected allocation failures during a multi-fill command. All Phase 1 and Phase 2 tests remain enabled. The CLI produced two trades at 20000 ticks and a remaining buy quantity of 30. Formatting passed. Windows Git `diff --check` passed for tracked changes; untracked files were checked separately during review. WSL Git requires `-c core.autocrlf=true` to match this Windows checkout's line-ending policy.
+
+The subsequent final engineering review expanded the suite to **38 cases**, with **38/38 passing** in each of Debug, Release and ASan/UBSan (114 successful executions in that matrix). It changed selection order access to return a value rather than a potentially dangling reference, added compile-time checks for the nonthrowing commit/return path, and added regressions for event-counter exhaustion after a fill, sell-side multi-level priority, and selection invalidation. See the [Phase 4 performance plan](phase4-performance-plan.md) for benchmark proposals and transaction alternatives.
+
+## Limitations and next steps
+
+Cloning all book state per successful submit or maintenance operation prioritizes rollback guarantees over latency and can require significant memory. No performance results are claimed. Failure injection covers individual allocation points in the tested multi-fill path, not every possible system or allocator failure. There is no persistence, networking, concurrent access, risk, self-trade prevention, durable reporting, or atomic integration with an event log. Maintenance calls do not yet emit exchange-level cancellation/replace reports. Instrument tick sizes and signed external input validation remain integration work. A seed can restore counters but not the book itself. Phase 4 should establish realistic workloads, benchmark and profile, then consider a more efficient transactional design while preserving failure and replay guarantees.

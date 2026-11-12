@@ -1,5 +1,7 @@
 # Phase 2 proposal: limit order book
 
+Historical Phase 2 design: Phase 3 has since implemented checked fills and matching; see [Phase 3 matching design](phase3-matching-design.md) for current behavior. The proposals below describe the earlier design state.
+
 The Phase 2 implementation owns and organizes **resting** limit orders for one instrument. It exposes best levels and controlled operations to insert, modify, and remove resting orders. The matching engine will own incoming-order policy, decide executions, and produce trade events. Neither book nor future engine depends on a TCP protocol. The sections below retain the original design alternatives and future fill proposal; see the [implementation report](phase2-implementation-report.md) for the actual API and guarantees.
 
 ## Representation alternatives

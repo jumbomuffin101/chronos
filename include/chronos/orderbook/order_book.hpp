@@ -6,8 +6,10 @@
 #include <functional>
 #include <list>
 #include <map>
+#include <memory>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace chronos::orderbook {
@@ -27,7 +29,8 @@ enum class Result {
     WrongSymbol,
     InvalidModification,
     Overflow,
-    UnsupportedOrderType
+    UnsupportedOrderType,
+    StaleSelection
 };
 
 struct OrderSnapshot {
@@ -46,11 +49,25 @@ struct LevelSnapshot {
     std::size_t order_count;
 };
 
+class Selection {
+  public:
+    // A value remains valid even if this selection is destroyed.
+    [[nodiscard]] OrderSnapshot order() const noexcept { return order_; }
+
+  private:
+    friend class OrderBook;
+    Selection(OrderSnapshot order, std::shared_ptr<const int> identity, std::uint64_t revision)
+        : order_(order), identity_(std::move(identity)), revision_(revision) {}
+    OrderSnapshot order_;
+    std::shared_ptr<const int> identity_;
+    std::uint64_t revision_;
+};
+
 // One book per symbol. Calls must be serialized. FIFO is the order of successful
 // add/priority-losing modify calls, independent of caller-provided sequence metadata.
 class OrderBook {
   public:
-    explicit OrderBook(SymbolId symbol) noexcept : symbol_(symbol) {}
+    explicit OrderBook(SymbolId symbol) : symbol_(symbol) {}
     OrderBook(const OrderBook &) = delete;
     OrderBook &operator=(const OrderBook &) = delete;
     OrderBook(OrderBook &&) = delete;
@@ -59,6 +76,9 @@ class OrderBook {
     Result add(const core::Order &order);
     Result cancel(OrderId id);
     Result modify(OrderId id, Price price, Quantity quantity);
+    [[nodiscard]] std::optional<Selection> best_resting(Side side) const;
+    Result apply_fill(const Selection &selection, Quantity quantity);
+    [[nodiscard]] std::unique_ptr<OrderBook> clone() const;
 
     [[nodiscard]] std::optional<OrderSnapshot> find(OrderId id) const;
     [[nodiscard]] std::optional<LevelSnapshot> best_bid() const;
@@ -104,6 +124,8 @@ class OrderBook {
     Bids bids_;
     Asks asks_;
     std::unordered_map<OrderId, Location, IdHash> index_;
+    std::shared_ptr<const int> identity_ = std::make_shared<const int>(0);
+    std::uint64_t revision_ = 0;
 };
 
 } // namespace chronos::orderbook
