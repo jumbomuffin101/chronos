@@ -8,10 +8,43 @@
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
 namespace chronos::gateway {
+
+enum class TracePoint {
+    SocketConfigured,
+    ClientSendStart,
+    ClientSendEnd,
+    FrameReceived,
+    CommandEnqueued,
+    Dispatch,
+    TransactionStart,
+    TransactionEnd,
+    ReportQueued,
+    SocketWrite,
+    ClientReceived
+};
+struct TraceEvent {
+    TracePoint point;
+    std::int64_t monotonic_ns;
+    std::uint64_t session_id;
+    std::uint64_t request_id;
+    std::uint8_t value;
+};
+// Callback must be nonblocking, noexcept and safe for concurrent client and
+// gateway threads. The caller owns the context for the lifetime of both.
+struct TraceSink {
+    void (*record)(void *, const TraceEvent &) noexcept = nullptr;
+    void *context = nullptr;
+};
+struct TransportOptions {
+    // Unspecified preserves the endpoint default: on for gateway, off for client.
+    std::optional<bool> tcp_nodelay = std::nullopt;
+    TraceSink trace{};
+};
 
 // Move-only RAII wrapper; does not take ownership of descriptors passed elsewhere.
 class Socket {
@@ -37,7 +70,8 @@ class Socket {
 class Gateway {
   public:
     explicit Gateway(std::uint16_t port = 0, std::size_t max_sessions = 16,
-                     std::chrono::milliseconds idle_timeout = std::chrono::seconds(5));
+                     std::chrono::milliseconds idle_timeout = std::chrono::seconds(5),
+                     TransportOptions options = {});
     ~Gateway();
     Gateway(const Gateway &) = delete;
     Gateway &operator=(const Gateway &) = delete;
@@ -56,8 +90,8 @@ class Gateway {
 
 class Client {
   public:
-    explicit Client(std::uint16_t port,
-                    std::chrono::milliseconds timeout = std::chrono::seconds(2));
+    explicit Client(std::uint16_t port, std::chrono::milliseconds timeout = std::chrono::seconds(2),
+                    TransportOptions options = {});
     [[nodiscard]] bool send(const Frame &request);
     [[nodiscard]] bool receive(Frame &response);
     [[nodiscard]] bool exchange(const Frame &request, Frame &response);
@@ -67,6 +101,7 @@ class Client {
     std::chrono::milliseconds timeout_;
     FrameDecoder decoder_;
     std::deque<Frame> pending_;
+    TransportOptions options_;
 };
 
 } // namespace chronos::gateway

@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <limits>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <stdexcept>
 #include <sys/socket.h>
@@ -23,6 +24,25 @@ namespace chronos::gateway {
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t max_output = 2 * max_frame_size;
+void trace(TraceSink sink, TracePoint point, std::uint64_t session, std::uint64_t request,
+           std::uint8_t value = 0) noexcept {
+    if (sink.record) {
+        const auto now =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch())
+                .count();
+        sink.record(sink.context, {point, now, session, request, value});
+    }
+}
+void configure_tcp(int fd, bool nodelay) {
+    const int enabled = nodelay ? 1 : 0;
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled)) < 0)
+        throw std::runtime_error("TCP_NODELAY configuration failed");
+    int actual = 0;
+    socklen_t length = sizeof(actual);
+    if (::getsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &actual, &length) < 0 ||
+        (actual != 0) != nodelay)
+        throw std::runtime_error("TCP_NODELAY verification failed");
+}
 std::uint64_t wire64(const std::uint8_t *p) {
     return read_u64(std::span<const std::uint8_t, 8>{p, 8});
 }
@@ -106,13 +126,16 @@ class Gateway::Impl {
         bool closing = false;
         bool dead = false;
         bool report_inflight = false;
+        std::uint64_t report_request = 0;
+        std::uint8_t report_kind = 0;
         Clock::time_point activity = Clock::now();
     };
 
   public:
-    Impl(std::uint16_t port, std::size_t maximum, std::chrono::milliseconds idle)
+    Impl(std::uint16_t port, std::size_t maximum, std::chrono::milliseconds idle,
+         TransportOptions options)
         : listener_(::socket(AF_INET, SOCK_STREAM, 0)), maximum_(maximum), idle_(idle),
-          exchange_(maximum) {
+          exchange_(maximum), options_(options) {
         if (listener_.get() < 0 || maximum == 0 || maximum > 1024 || idle.count() <= 0)
             throw std::invalid_argument("invalid gateway configuration");
         nonblocking(listener_.get());
@@ -168,6 +191,8 @@ class Gateway::Impl {
         return true;
     }
     bool handle(Session &session, const Frame &frame, detail::Ingress &ingress) {
+        trace(options_.trace, TracePoint::FrameReceived, session.id, frame.request_id,
+              static_cast<std::uint8_t>(frame.type));
         Frame response;
         response.request_id = frame.request_id;
         if (!session.active) {
@@ -189,8 +214,10 @@ class Gateway::Impl {
                    frame.type == MessageType::CancelOrder) {
             if (!ingress.push(session.id, frame))
                 response = error_frame(ProtocolError::IngressFull, frame.request_id);
-            else
+            else {
+                trace(options_.trace, TracePoint::CommandEnqueued, session.id, frame.request_id);
                 return true;
+            }
         } else {
             session.closing = true;
             response = error_frame(ProtocolError::UnexpectedMessage, frame.request_id);
@@ -198,9 +225,11 @@ class Gateway::Impl {
         return queue(session, response) && !session.closing;
     }
     void dispatch(Session &session, const Frame &frame) {
+        trace(options_.trace, TracePoint::Dispatch, session.id, frame.request_id);
         const auto *p = frame.payload.data();
         const auto client = wire64(p);
         exchange::Result result;
+        trace(options_.trace, TracePoint::TransactionStart, session.id, frame.request_id);
         if (frame.type == MessageType::CancelOrder)
             result = exchange_.cancel(session.id, frame.request_id, client);
         else {
@@ -212,6 +241,8 @@ class Gateway::Impl {
                                       static_cast<core::OrderType>(p[13]),
                                       std::bit_cast<std::int64_t>(wire64(p + 14)), wire64(p + 22));
         }
+        trace(options_.trace, TracePoint::TransactionEnd, session.id, frame.request_id,
+              static_cast<std::uint8_t>(result));
         if (result != exchange::Result::Accepted) {
             Frame reply;
             reply.type = MessageType::OrderAck;
@@ -248,6 +279,10 @@ class Gateway::Impl {
         if (!queue(session, frame))
             return false;
         session.report_inflight = true;
+        session.report_request = report->request_id;
+        session.report_kind = static_cast<std::uint8_t>(report->kind);
+        trace(options_.trace, TracePoint::ReportQueued, session.id, report->request_id,
+              session.report_kind);
         return true;
     }
     void run(std::stop_token stop) noexcept {
@@ -286,6 +321,7 @@ class Gateway::Impl {
                             continue;
                         try {
                             nonblocking(incoming.get());
+                            configure_tcp(incoming.get(), options_.tcp_nodelay.value_or(true));
                         } catch (const std::runtime_error &) {
                             continue;
                         }
@@ -294,6 +330,8 @@ class Gateway::Impl {
                         session.id = ++next_id_;
                         if (!exchange_.open_session(session.id))
                             continue;
+                        trace(options_.trace, TracePoint::SocketConfigured, session.id, 0,
+                              options_.tcp_nodelay.value_or(true) ? 1 : 0);
                         sessions.push_back(std::move(session));
                     }
                 }
@@ -326,9 +364,21 @@ class Gateway::Impl {
                             s.dead = true;
                     }
                     if ((events & POLLOUT) != 0 && s.sent < s.output.size()) {
+                        const auto write_start = options_.trace.record && s.report_inflight
+                                                     ? Clock::now()
+                                                     : Clock::time_point{};
                         const auto n = ::send(s.socket.get(), s.output.data() + s.sent,
                                               s.output.size() - s.sent, MSG_NOSIGNAL);
                         if (n > 0) {
+                            if (options_.trace.record && s.report_inflight) {
+                                const auto ns =
+                                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        write_start.time_since_epoch())
+                                        .count();
+                                options_.trace.record(options_.trace.context,
+                                                      {TracePoint::SocketWrite, ns, s.id,
+                                                       s.report_request, s.report_kind});
+                            }
                             s.sent += static_cast<std::size_t>(n);
                             s.activity = Clock::now();
                         } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
@@ -378,11 +428,13 @@ class Gateway::Impl {
     std::uint16_t port_ = 0;
     std::uint64_t next_id_ = 0;
     exchange::Exchange exchange_;
+    TransportOptions options_;
     std::atomic_bool running_{true};
     std::jthread thread_;
 };
-Gateway::Gateway(std::uint16_t port, std::size_t max_sessions, std::chrono::milliseconds idle)
-    : impl_(std::make_unique<Impl>(port, max_sessions, idle)) {}
+Gateway::Gateway(std::uint16_t port, std::size_t max_sessions, std::chrono::milliseconds idle,
+                 TransportOptions options)
+    : impl_(std::make_unique<Impl>(port, max_sessions, idle, options)) {}
 Gateway::~Gateway() = default;
 std::uint16_t Gateway::port() const noexcept { return impl_->port(); }
 bool Gateway::running() const noexcept { return impl_->running(); }
@@ -395,12 +447,15 @@ std::optional<exchange::Report> Gateway::pending_report(std::uint64_t session) c
     return impl_->pending_report(session);
 }
 
-Client::Client(std::uint16_t port, std::chrono::milliseconds timeout)
-    : socket_(::socket(AF_INET, SOCK_STREAM, 0)), timeout_(timeout) {
+Client::Client(std::uint16_t port, std::chrono::milliseconds timeout, TransportOptions options)
+    : socket_(::socket(AF_INET, SOCK_STREAM, 0)), timeout_(timeout), options_(options) {
     if (socket_.get() < 0 || port == 0 || timeout.count() <= 0 ||
         timeout > std::chrono::seconds(60))
         throw std::invalid_argument("invalid client configuration");
     nonblocking(socket_.get());
+    configure_tcp(socket_.get(), options_.tcp_nodelay.value_or(false));
+    trace(options_.trace, TracePoint::SocketConfigured, 0, 0,
+          options_.tcp_nodelay.value_or(false) ? 1 : 0);
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
@@ -419,8 +474,12 @@ Client::Client(std::uint16_t port, std::chrono::milliseconds timeout)
     }
 }
 bool Client::send(const Frame &request) {
+    trace(options_.trace, TracePoint::ClientSendStart, 0, request.request_id);
     std::vector<std::uint8_t> encoded;
-    return encode_frame(request, encoded) && write_all(socket_.get(), encoded, timeout_);
+    const bool result =
+        encode_frame(request, encoded) && write_all(socket_.get(), encoded, timeout_);
+    trace(options_.trace, TracePoint::ClientSendEnd, 0, request.request_id, result ? 1 : 0);
+    return result;
 }
 bool Client::receive(Frame &response) {
     const auto deadline = Clock::now() + timeout_;
@@ -449,6 +508,8 @@ bool Client::receive(Frame &response) {
     }
     response = pending_.front();
     pending_.pop_front();
+    trace(options_.trace, TracePoint::ClientReceived, 0, response.request_id,
+          response.type == MessageType::Execution ? response.payload[44] : 255);
     return true;
 }
 bool Client::exchange(const Frame &request, Frame &response) {

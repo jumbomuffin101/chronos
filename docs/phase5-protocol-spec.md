@@ -81,6 +81,12 @@ progress, not a total frame deadline. Unexpected worker failure stops service.
 Replacement, risk, market data, client recovery and production identity remain
 unimplemented.
 
+The Linux gateway enables `TCP_NODELAY` on accepted sockets by default; the
+sample client leaves it disabled by default. `TransportOptions` can explicitly
+override either endpoint and can enable optional diagnostic tracing. These
+transport settings do not change protocol framing or delivery guarantees. See
+the [latency investigation](phase5b-tcp-latency-investigation.md).
+
 Phase 5A used version 1, whose execution type was a 40-byte reserved layout.
 Version 2 assigns that type a different 69-byte layout and changes order-entry
 behavior, so version 1 peers are explicitly rejected rather than being silently

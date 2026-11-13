@@ -17,6 +17,24 @@ using namespace chronos::gateway;
 using namespace std::chrono_literals;
 
 namespace {
+struct TraceCapture {
+    std::array<TraceEvent, 128> events{};
+    std::atomic<std::size_t> count{0};
+    static void record(void *context, const TraceEvent &event) noexcept {
+        auto &capture = *static_cast<TraceCapture *>(context);
+        const auto index = capture.count.fetch_add(1, std::memory_order_relaxed);
+        if (index < capture.events.size())
+            capture.events[index] = event;
+    }
+    bool contains(TracePoint point, std::uint64_t request, int value = -1) const {
+        const auto end = std::min(count.load(), events.size());
+        return std::any_of(events.begin(), events.begin() + static_cast<std::ptrdiff_t>(end),
+                           [&](const TraceEvent &event) {
+                               return event.point == point && event.request_id == request &&
+                                      (value < 0 || event.value == value);
+                           });
+    }
+};
 Frame message(MessageType type, std::uint64_t id = 1) {
     Frame f;
     f.type = type;
@@ -536,4 +554,37 @@ TEST(GatewayExchange, DisconnectRetainsOwnerReportAndTradeAudit) {
     ASSERT_TRUE(report);
     EXPECT_EQ(report->kind, chronos::exchange::ReportKind::Filled);
     EXPECT_EQ(report->quantity, 3U);
+}
+
+TEST(GatewayExchange, TracesOrderAndReportsWithConfiguredSocketOptions) {
+    TraceCapture server_trace, client_trace;
+    Gateway server{0, 2, 5s, {.trace = {TraceCapture::record, &server_trace}}};
+    Client client{server.port(), 2s, {.trace = {TraceCapture::record, &client_trace}}};
+    Frame f;
+    ASSERT_TRUE(client.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(client.send(order(27, 20, 1, 0, 0, 100, 1)));
+    ASSERT_TRUE(client.receive(f));
+    ASSERT_TRUE(client.receive(f));
+    EXPECT_EQ(f.payload[44], 3);
+    server.stop();
+    EXPECT_TRUE(server_trace.contains(TracePoint::SocketConfigured, 0, 1));
+    EXPECT_TRUE(client_trace.contains(TracePoint::SocketConfigured, 0, 0));
+    for (const auto point :
+         {TracePoint::FrameReceived, TracePoint::CommandEnqueued, TracePoint::Dispatch,
+          TracePoint::TransactionStart, TracePoint::TransactionEnd, TracePoint::ReportQueued,
+          TracePoint::SocketWrite})
+        EXPECT_TRUE(server_trace.contains(point, 27));
+    EXPECT_TRUE(client_trace.contains(TracePoint::ClientSendStart, 27));
+    EXPECT_TRUE(client_trace.contains(TracePoint::ClientSendEnd, 27, 1));
+    EXPECT_TRUE(client_trace.contains(TracePoint::ClientReceived, 27, 3));
+}
+
+TEST(Gateway, CanDisableNoDelayForControlledComparison) {
+    TraceCapture capture;
+    Gateway server{0, 1, 5s, {false, {TraceCapture::record, &capture}}};
+    Client client{server.port()};
+    Frame reply;
+    ASSERT_TRUE(client.exchange(message(MessageType::Hello), reply));
+    server.stop();
+    EXPECT_TRUE(capture.contains(TracePoint::SocketConfigured, 0, 0));
 }
