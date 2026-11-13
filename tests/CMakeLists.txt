@@ -1,4 +1,4 @@
-add_executable(chronos_core_tests core/test_order.cpp orderbook/test_order_book.cpp matching/test_matching.cpp matching/test_differential.cpp)
+add_executable(chronos_core_tests core/test_order.cpp orderbook/test_order_book.cpp matching/test_matching.cpp matching/test_differential.cpp exchange/test_exchange.cpp)
 target_link_libraries(chronos_core_tests PRIVATE chronos_core GTest::gtest_main)
 chronos_configure_target(chronos_core_tests)
 include(GoogleTest)

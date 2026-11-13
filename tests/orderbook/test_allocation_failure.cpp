@@ -1,3 +1,4 @@
+#include "chronos/exchange/exchange.hpp"
 #include "chronos/matching/matching_engine.hpp"
 #include "chronos/orderbook/order_book.hpp"
 
@@ -104,6 +105,81 @@ TEST(OrderBookAllocation, InsertNewLevelRollsBack) { exercise_failures(false, fa
 TEST(OrderBookAllocation, InsertExistingLevelRollsBack) { exercise_failures(false, true); }
 TEST(OrderBookAllocation, MoveToNewLevelRollsBack) { exercise_failures(true, false); }
 TEST(OrderBookAllocation, MoveToExistingLevelRollsBack) { exercise_failures(true, true); }
+
+TEST(ExchangeAllocation, StagedFillLeavesLiveStateUntouchedOnAllocationFailure) {
+    using chronos::exchange::Exchange;
+    using ExchangeResult = chronos::exchange::Result;
+    int failures = 0;
+    bool completed = false;
+    for (int fail_at = 0; fail_at < 256 && !completed; ++fail_at) {
+        Exchange exchange;
+        ASSERT_TRUE(exchange.open_session(1));
+        ASSERT_TRUE(exchange.open_session(2));
+        ASSERT_EQ(exchange.submit(1, 1, 1, SymbolId{1}, Side::Sell, OrderType::Limit, 10, 5),
+                  ExchangeResult::Accepted);
+        exchange.pop(1);
+        exchange.pop(1);
+        bool threw = false;
+        allocations_until_failure = fail_at;
+        try {
+            const auto result =
+                exchange.submit(2, 2, 2, SymbolId{1}, Side::Buy, OrderType::Market, 0, 3);
+            allocations_until_failure = -1;
+            ASSERT_EQ(result, ExchangeResult::Accepted);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            threw = true;
+        } catch (...) {
+            allocations_until_failure = -1;
+            throw;
+        }
+        if (threw) {
+            ++failures;
+            ASSERT_TRUE(exchange.find(1, 1));
+            EXPECT_EQ(exchange.find(1, 1)->quantity, 5U);
+            EXPECT_FALSE(exchange.find(2, 2));
+            EXPECT_FALSE(exchange.front(1));
+            EXPECT_FALSE(exchange.front(2));
+            EXPECT_EQ(exchange.trade_count(), 0U);
+        }
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GT(failures, 5);
+}
+
+TEST(ExchangeAllocation, CancellationStagingFailurePreservesOrder) {
+    using chronos::exchange::Exchange;
+    using ExchangeResult = chronos::exchange::Result;
+    int failures = 0;
+    bool completed = false;
+    for (int fail_at = 0; fail_at < 128 && !completed; ++fail_at) {
+        Exchange exchange;
+        ASSERT_TRUE(exchange.open_session(1));
+        ASSERT_EQ(exchange.submit(1, 1, 1, SymbolId{1}, Side::Buy, OrderType::Limit, 10, 5),
+                  ExchangeResult::Accepted);
+        exchange.pop(1);
+        exchange.pop(1);
+        allocations_until_failure = fail_at;
+        try {
+            const auto result = exchange.cancel(1, 2, 1);
+            allocations_until_failure = -1;
+            ASSERT_EQ(result, ExchangeResult::Accepted);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            ++failures;
+            ASSERT_TRUE(exchange.find(1, 1));
+            EXPECT_EQ(exchange.find(1, 1)->quantity, 5U);
+            EXPECT_FALSE(exchange.front(1));
+        } catch (...) {
+            allocations_until_failure = -1;
+            throw;
+        }
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GT(failures, 3);
+}
 
 TEST(MatchingAllocation, MultiFillCommandIsAtomic) {
     using namespace chronos::matching;

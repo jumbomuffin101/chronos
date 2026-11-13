@@ -26,6 +26,12 @@ MatchingEngine::MatchingEngine(core::SymbolId symbol, Counters counters, Transac
     : symbol_(symbol), book_(std::make_unique<orderbook::OrderBook>(symbol)), counters_(counters),
       mode_(mode) {}
 
+std::unique_ptr<MatchingEngine> MatchingEngine::clone() const {
+    auto copy = std::make_unique<MatchingEngine>(symbol_, counters_, mode_);
+    copy->book_ = book_->clone();
+    return copy;
+}
+
 Outcome MatchingEngine::submit(const Request &request) {
     return mode_ == TransactionMode::CloneReference ? submit_cloned(request)
                                                     : submit_planned(request);

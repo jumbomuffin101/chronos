@@ -76,6 +76,9 @@ class MatchingEngine {
     [[nodiscard]] std::vector<orderbook::OrderSnapshot> orders_at(core::Side side,
                                                                   core::Price price) const;
     [[nodiscard]] Counters counters() const noexcept { return counters_; }
+    // Independent snapshot for an enclosing transaction. Allocation failure leaves
+    // the source engine unchanged; the returned book has its own identity.
+    [[nodiscard]] std::unique_ptr<MatchingEngine> clone() const;
 
   private:
     [[nodiscard]] Outcome submit_cloned(const Request &request);

@@ -1,8 +1,11 @@
 #include "chronos/gateway/tcp.hpp"
+#include "chronos/exchange/exchange.hpp"
+#include "chronos/gateway/ingress.hpp"
 
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -20,6 +23,10 @@ namespace chronos::gateway {
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t max_output = 2 * max_frame_size;
+std::uint64_t wire64(const std::uint8_t *p) {
+    return read_u64(std::span<const std::uint8_t, 8>{p, 8});
+}
+void put64(std::uint8_t *p, std::uint64_t v) { write_u64(std::span<std::uint8_t, 8>{p, 8}, v); }
 void nonblocking(int fd) {
     const int flags = ::fcntl(fd, F_GETFL, 0);
     if (flags < 0 || ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) < 0)
@@ -98,12 +105,14 @@ class Gateway::Impl {
         bool active = false;
         bool closing = false;
         bool dead = false;
+        bool report_inflight = false;
         Clock::time_point activity = Clock::now();
     };
 
   public:
     Impl(std::uint16_t port, std::size_t maximum, std::chrono::milliseconds idle)
-        : listener_(::socket(AF_INET, SOCK_STREAM, 0)), maximum_(maximum), idle_(idle) {
+        : listener_(::socket(AF_INET, SOCK_STREAM, 0)), maximum_(maximum), idle_(idle),
+          exchange_(maximum) {
         if (listener_.get() < 0 || maximum == 0 || maximum > 1024 || idle.count() <= 0)
             throw std::invalid_argument("invalid gateway configuration");
         nonblocking(listener_.get());
@@ -133,6 +142,15 @@ class Gateway::Impl {
     }
     std::uint16_t port() const noexcept { return port_; }
     bool running() const noexcept { return running_.load(); }
+    std::size_t trade_count() const noexcept {
+        return running_.load() ? 0 : exchange_.trade_count();
+    }
+    std::optional<exchange::AuditTrade> trade(std::size_t index) const noexcept {
+        return running_.load() ? std::nullopt : exchange_.trade(index);
+    }
+    std::optional<exchange::Report> pending_report(std::uint64_t session) const {
+        return running_.load() ? std::nullopt : exchange_.front(session);
+    }
 
   private:
     bool queue(Session &session, const Frame &frame) {
@@ -149,7 +167,7 @@ class Gateway::Impl {
         session.output.insert(session.output.end(), bytes.begin(), bytes.end());
         return true;
     }
-    bool handle(Session &session, const Frame &frame) {
+    bool handle(Session &session, const Frame &frame, detail::Ingress &ingress) {
         Frame response;
         response.request_id = frame.request_id;
         if (!session.active) {
@@ -167,18 +185,79 @@ class Gateway::Impl {
         else if (frame.type == MessageType::Echo) {
             response = frame;
             response.type = MessageType::EchoReply;
-        } else if (frame.type == MessageType::SubmitOrder || frame.type == MessageType::CancelOrder)
-            response = error_frame(ProtocolError::UnsupportedOperation, frame.request_id);
-        else {
+        } else if (frame.type == MessageType::SubmitOrder ||
+                   frame.type == MessageType::CancelOrder) {
+            if (!ingress.push(session.id, frame))
+                response = error_frame(ProtocolError::IngressFull, frame.request_id);
+            else
+                return true;
+        } else {
             session.closing = true;
             response = error_frame(ProtocolError::UnexpectedMessage, frame.request_id);
         }
         return queue(session, response) && !session.closing;
     }
+    void dispatch(Session &session, const Frame &frame) {
+        const auto *p = frame.payload.data();
+        const auto client = wire64(p);
+        exchange::Result result;
+        if (frame.type == MessageType::CancelOrder)
+            result = exchange_.cancel(session.id, frame.request_id, client);
+        else {
+            const auto symbol = (static_cast<std::uint32_t>(p[8]) << 24) |
+                                (static_cast<std::uint32_t>(p[9]) << 16) |
+                                (static_cast<std::uint32_t>(p[10]) << 8) | p[11];
+            result = exchange_.submit(session.id, frame.request_id, client, core::SymbolId{symbol},
+                                      static_cast<core::Side>(p[12]),
+                                      static_cast<core::OrderType>(p[13]),
+                                      std::bit_cast<std::int64_t>(wire64(p + 14)), wire64(p + 22));
+        }
+        if (result != exchange::Result::Accepted) {
+            Frame reply;
+            reply.type = MessageType::OrderAck;
+            reply.request_id = frame.request_id;
+            reply.payload_size = 17;
+            put64(reply.payload.data(), client);
+            reply.payload[8] = static_cast<std::uint8_t>(result);
+            if (!queue(session, reply))
+                session.dead = true;
+        }
+    }
+    bool queue_report(Session &session) {
+        const auto report = exchange_.front(session.id);
+        if (!report || session.report_inflight || !session.output.empty())
+            return true;
+        Frame frame;
+        frame.type = MessageType::Execution;
+        frame.request_id = report->request_id;
+        frame.payload_size = 69;
+        auto *p = frame.payload.data();
+        put64(p, report->sequence);
+        put64(p + 8, report->command_sequence);
+        put64(p + 16, report->client_order_id);
+        put64(p + 24, report->internal_order_id);
+        put64(p + 32, report->trade_id);
+        p[40] = static_cast<std::uint8_t>(report->symbol >> 24);
+        p[41] = static_cast<std::uint8_t>(report->symbol >> 16);
+        p[42] = static_cast<std::uint8_t>(report->symbol >> 8);
+        p[43] = static_cast<std::uint8_t>(report->symbol);
+        p[44] = static_cast<std::uint8_t>(report->kind);
+        put64(p + 45, std::bit_cast<std::uint64_t>(report->price));
+        put64(p + 53, report->quantity);
+        put64(p + 61, report->remaining);
+        if (!queue(session, frame))
+            return false;
+        session.report_inflight = true;
+        return true;
+    }
     void run(std::stop_token stop) noexcept {
         try {
             std::vector<Session> sessions;
             while (!stop.stop_requested()) {
+                detail::Ingress ingress;
+                for (auto &s : sessions)
+                    if (!s.dead && !queue_report(s))
+                        s.dead = true;
                 const std::size_t count = sessions.size();
                 std::vector<pollfd> fds;
                 fds.reserve(count + 1);
@@ -213,6 +292,8 @@ class Gateway::Impl {
                         Session session;
                         session.socket = std::move(incoming);
                         session.id = ++next_id_;
+                        if (!exchange_.open_session(session.id))
+                            continue;
                         sessions.push_back(std::move(session));
                     }
                 }
@@ -231,7 +312,7 @@ class Gateway::Impl {
                             const auto error = s.decoder.feed(
                                 std::span<const std::uint8_t>{input.data(),
                                                               static_cast<std::size_t>(n)},
-                                [&](const Frame &f) { return handle(s, f); });
+                                [&](const Frame &f) { return handle(s, f, ingress); });
                             if (error != ProtocolError::None && !s.closing) {
                                 s.closing = true;
                                 if (!queue(s, error_frame(error, 0)))
@@ -256,6 +337,10 @@ class Gateway::Impl {
                         if (s.sent == s.output.size()) {
                             s.output.clear();
                             s.sent = 0;
+                            if (s.report_inflight) {
+                                exchange_.pop(s.id);
+                                s.report_inflight = false;
+                            }
                         }
                     }
                     if ((events & POLLHUP) != 0 && (events & POLLIN) == 0)
@@ -265,6 +350,22 @@ class Gateway::Impl {
                     if (Clock::now() - s.activity >= idle_)
                         s.dead = true;
                 }
+                for (const auto &command : ingress.commands()) {
+                    const auto it =
+                        std::find_if(sessions.begin(), sessions.end(), [&](const Session &s) {
+                            return s.id == command.session && !s.dead;
+                        });
+                    if (it == sessions.end())
+                        continue;
+                    try {
+                        dispatch(*it, command.frame);
+                    } catch (const std::bad_alloc &) {
+                        it->dead = true;
+                    }
+                }
+                for (const auto &s : sessions)
+                    if (s.dead)
+                        exchange_.close_session(s.id);
                 std::erase_if(sessions, [](const Session &s) { return s.dead; });
             }
         } catch (...) { /* Socket owners close on exit; running() reports service failure. */
@@ -276,6 +377,7 @@ class Gateway::Impl {
     std::chrono::milliseconds idle_;
     std::uint16_t port_ = 0;
     std::uint64_t next_id_ = 0;
+    exchange::Exchange exchange_;
     std::atomic_bool running_{true};
     std::jthread thread_;
 };
@@ -285,6 +387,13 @@ Gateway::~Gateway() = default;
 std::uint16_t Gateway::port() const noexcept { return impl_->port(); }
 bool Gateway::running() const noexcept { return impl_->running(); }
 void Gateway::stop() noexcept { impl_->stop(); }
+std::size_t Gateway::trade_count() const noexcept { return impl_->trade_count(); }
+std::optional<exchange::AuditTrade> Gateway::trade(std::size_t index) const noexcept {
+    return impl_->trade(index);
+}
+std::optional<exchange::Report> Gateway::pending_report(std::uint64_t session) const {
+    return impl_->pending_report(session);
+}
 
 Client::Client(std::uint16_t port, std::chrono::milliseconds timeout)
     : socket_(::socket(AF_INET, SOCK_STREAM, 0)), timeout_(timeout) {
@@ -309,13 +418,13 @@ Client::Client(std::uint16_t port, std::chrono::milliseconds timeout)
             throw std::runtime_error("connect failed");
     }
 }
-bool Client::exchange(const Frame &request, Frame &response) {
+bool Client::send(const Frame &request) {
     std::vector<std::uint8_t> encoded;
-    if (!encode_frame(request, encoded) || !write_all(socket_.get(), encoded, timeout_))
-        return false;
+    return encode_frame(request, encoded) && write_all(socket_.get(), encoded, timeout_);
+}
+bool Client::receive(Frame &response) {
     const auto deadline = Clock::now() + timeout_;
-    bool received = false;
-    while (!received) {
+    while (pending_.empty()) {
         if (!wait_fd(socket_.get(), POLLIN, deadline))
             return false;
         std::array<std::uint8_t, max_frame_size> input{};
@@ -330,15 +439,19 @@ bool Client::exchange(const Frame &request, Frame &response) {
         const auto error =
             decoder_.feed(std::span<const std::uint8_t>{input.data(), static_cast<std::size_t>(n)},
                           [&](const Frame &frame) {
-                              if (received)
+                              if (pending_.size() >= 32)
                                   return false;
-                              response = frame;
-                              received = true;
+                              pending_.push_back(frame);
                               return true;
                           });
         if (error != ProtocolError::None)
             return false;
     }
-    return response.request_id == request.request_id;
+    response = pending_.front();
+    pending_.pop_front();
+    return true;
+}
+bool Client::exchange(const Frame &request, Frame &response) {
+    return send(request) && receive(response) && response.request_id == request.request_id;
 }
 } // namespace chronos::gateway

@@ -11,7 +11,7 @@ namespace chronos::gateway {
 
 inline constexpr std::size_t header_size = 16;
 inline constexpr std::size_t max_frame_size = 4096;
-inline constexpr std::uint8_t protocol_version = 1;
+inline constexpr std::uint8_t protocol_version = 2;
 
 enum class MessageType : std::uint8_t {
     Hello = 1,
@@ -37,10 +37,12 @@ enum class ProtocolError : std::uint16_t {
     Truncated = 7,
     HandshakeRequired = 8,
     UnsupportedOperation = 9,
-    UnexpectedMessage = 10
+    UnexpectedMessage = 10,
+    ExchangeRejected = 11,
+    IngressFull = 12
 };
 
-// Future wire payloads are logical fields, never serialized via native struct layout.
+// Logical fields only; native struct layout is never serialized.
 struct FutureOrder {
     std::uint64_t client_order_id;
     std::uint32_t symbol;
@@ -58,11 +60,16 @@ struct FutureAck {
     std::uint64_t sequence;
 };
 struct FutureExecution {
+    std::uint64_t sequence;
+    std::uint64_t command_sequence;
     std::uint64_t client_order_id;
+    std::uint64_t internal_order_id;
     std::uint64_t trade_id;
+    std::uint32_t symbol;
+    std::uint8_t kind;
     std::int64_t price_ticks;
     std::uint64_t quantity;
-    std::uint64_t sequence;
+    std::uint64_t remaining;
 };
 
 struct Frame {

@@ -1,3 +1,4 @@
+#include "chronos/gateway/ingress.hpp"
 #include "chronos/gateway/tcp.hpp"
 
 #include <algorithm>
@@ -33,6 +34,24 @@ void set_nonblocking(int fd) {
     ASSERT_GE(flags, 0);
     ASSERT_EQ(fcntl(fd, F_SETFL, flags | O_NONBLOCK), 0);
 }
+Frame order(std::uint64_t request, std::uint64_t client, std::uint32_t symbol, std::uint8_t side,
+            std::uint8_t type, std::uint64_t price, std::uint64_t qty) {
+    Frame f = message(MessageType::SubmitOrder, request);
+    f.payload_size = 30;
+    write_u64(std::span<std::uint8_t, 8>{f.payload.data(), 8}, client);
+    f.payload[8] = static_cast<std::uint8_t>(symbol >> 24);
+    f.payload[9] = static_cast<std::uint8_t>(symbol >> 16);
+    f.payload[10] = static_cast<std::uint8_t>(symbol >> 8);
+    f.payload[11] = static_cast<std::uint8_t>(symbol);
+    f.payload[12] = side;
+    f.payload[13] = type;
+    write_u64(std::span<std::uint8_t, 8>{f.payload.data() + 14, 8}, price);
+    write_u64(std::span<std::uint8_t, 8>{f.payload.data() + 22, 8}, qty);
+    return f;
+}
+std::uint64_t field(const Frame &f, std::size_t offset) {
+    return read_u64(std::span<const std::uint8_t, 8>{f.payload.data() + offset, 8});
+}
 } // namespace
 
 TEST(Protocol, DeterministicEndianRoundTripAndFragmentation) {
@@ -43,7 +62,7 @@ TEST(Protocol, DeterministicEndianRoundTripAndFragmentation) {
     original.payload[2] = 255;
     const auto encoded = bytes(original);
     EXPECT_EQ(encoded[3], 19);
-    EXPECT_EQ(encoded[4], 1);
+    EXPECT_EQ(encoded[4], protocol_version);
     EXPECT_EQ(encoded[8], 1);
     EXPECT_EQ(encoded[15], 8);
     for (std::size_t split = 0; split <= encoded.size(); ++split) {
@@ -89,6 +108,18 @@ TEST(Protocol, ConcatenatedFramesAndBytewiseInput) {
     }
 }
 
+TEST(Ingress, SaturationRejectsWithoutDiscardingAdmittedCommands) {
+    chronos::gateway::detail::Ingress ingress;
+    for (std::size_t i = 0; i < ingress.capacity; ++i)
+        ASSERT_TRUE(ingress.push(7, message(MessageType::Health, i)));
+    EXPECT_FALSE(ingress.push(8, message(MessageType::Health, 999)));
+    ASSERT_EQ(ingress.commands().size(), ingress.capacity);
+    for (std::size_t i = 0; i < ingress.capacity; ++i) {
+        EXPECT_EQ(ingress.commands()[i].session, 7U);
+        EXPECT_EQ(ingress.commands()[i].frame.request_id, i);
+    }
+}
+
 TEST(Protocol, RejectsInvalidHeadersAndBoundedLengths) {
     auto input = bytes(message(MessageType::Hello));
     auto check = [&](std::vector<std::uint8_t> data, ProtocolError expected) {
@@ -98,7 +129,7 @@ TEST(Protocol, RejectsInvalidHeadersAndBoundedLengths) {
         EXPECT_LE(decoder.buffered(), max_frame_size);
     };
     auto v = input;
-    v[4] = 2;
+    v[4] = 1;
     check(v, ProtocolError::UnsupportedVersion);
     v = input;
     v[5] = 255;
@@ -185,7 +216,7 @@ TEST(Tcp, WriteTimeoutWhenPeerDoesNotRead) {
     EXPECT_FALSE(write_all(writer.get(), payload, 100ms));
 }
 
-TEST(Gateway, HandshakeHealthEchoAndUnsupportedOrder) {
+TEST(Gateway, HandshakeHealthEchoAndInvalidOrder) {
     Gateway server{0};
     Client client{server.port()};
     Frame response;
@@ -216,8 +247,8 @@ TEST(Gateway, HandshakeHealthEchoAndUnsupportedOrder) {
     Frame order = message(MessageType::SubmitOrder, 14);
     order.payload_size = 30;
     ASSERT_TRUE(client.exchange(order, response));
-    EXPECT_EQ(response.type, MessageType::Error);
-    EXPECT_EQ(response.payload[1], static_cast<std::uint8_t>(ProtocolError::UnsupportedOperation));
+    EXPECT_EQ(response.type, MessageType::OrderAck);
+    EXPECT_NE(response.payload[8], 0);
     server.stop();
 }
 
@@ -389,4 +420,120 @@ TEST(Gateway, MalformedVersionReceivesErrorAndCloses) {
     EXPECT_EQ(response.payload[1], static_cast<std::uint8_t>(ProtocolError::UnsupportedVersion));
     std::uint8_t byte = 0;
     EXPECT_EQ(recv(raw.get(), &byte, 1, 0), 0);
+}
+
+TEST(GatewayExchange, RoutesPartialAndCompleteFillsToBothClients) {
+    Gateway server{0};
+    Client seller{server.port()}, buyer{server.port()};
+    Frame f;
+    ASSERT_TRUE(seller.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(buyer.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(seller.send(order(11, 100, 1, 1, 0, 100, 5)));
+    ASSERT_TRUE(seller.receive(f));
+    ASSERT_EQ(f.type, MessageType::Execution);
+    EXPECT_EQ(f.payload[44], 0);
+    const auto sell_id = field(f, 24);
+    ASSERT_TRUE(seller.receive(f));
+    EXPECT_EQ(f.payload[44], 3);
+    ASSERT_TRUE(buyer.send(order(22, 200, 1, 0, 1, 0, 3)));
+    ASSERT_TRUE(buyer.receive(f));
+    EXPECT_EQ(f.payload[44], 0);
+    EXPECT_NE(field(f, 24), sell_id);
+    ASSERT_TRUE(buyer.receive(f));
+    EXPECT_EQ(f.payload[44], 2);
+    EXPECT_EQ(field(f, 45), 100U);
+    EXPECT_EQ(field(f, 53), 3U);
+    ASSERT_TRUE(seller.receive(f));
+    EXPECT_EQ(f.payload[44], 1);
+    EXPECT_EQ(field(f, 61), 2U);
+    Frame cancel = message(MessageType::CancelOrder, 33);
+    cancel.payload_size = 8;
+    write_u64(std::span<std::uint8_t, 8>{cancel.payload.data(), 8}, 100);
+    ASSERT_TRUE(seller.send(cancel));
+    ASSERT_TRUE(seller.receive(f));
+    EXPECT_EQ(f.payload[44], 4);
+    EXPECT_EQ(f.request_id, 33U);
+    server.stop();
+    ASSERT_EQ(server.trade_count(), 1U);
+    ASSERT_TRUE(server.trade(0));
+    EXPECT_EQ(server.trade(0)->price, 100);
+    EXPECT_EQ(server.trade(0)->quantity, 3U);
+}
+
+TEST(GatewayExchange, RejectsUnauthorizedCancellationAndInvalidFields) {
+    Gateway server{0};
+    Client owner{server.port()}, other{server.port()};
+    Frame f;
+    ASSERT_TRUE(owner.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(other.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(owner.send(order(10, 123, 9, 1, 0, 100, 4)));
+    ASSERT_TRUE(owner.receive(f));
+    ASSERT_TRUE(owner.receive(f));
+    Frame cancel = message(MessageType::CancelOrder, 11);
+    cancel.payload_size = 8;
+    write_u64(std::span<std::uint8_t, 8>{cancel.payload.data(), 8}, 123);
+    ASSERT_TRUE(other.exchange(cancel, f));
+    EXPECT_EQ(f.type, MessageType::OrderAck);
+    EXPECT_EQ(f.payload[8], 5);
+    ASSERT_TRUE(owner.exchange(order(12, 123, 9, 1, 0, 100, 4), f));
+    EXPECT_EQ(f.payload[8], 3);
+    ASSERT_TRUE(other.exchange(order(13, 456, 9, 99, 0, 100, 1), f));
+    EXPECT_EQ(f.payload[8], 6);
+    ASSERT_TRUE(owner.send(cancel));
+    ASSERT_TRUE(owner.receive(f));
+    EXPECT_EQ(f.type, MessageType::Execution);
+    EXPECT_EQ(f.payload[44], 4);
+    EXPECT_EQ(field(f, 53), 4U);
+    EXPECT_EQ(field(f, 61), 0U);
+}
+
+TEST(GatewayExchange, ReportsFullRestingFillAndMarketRemainder) {
+    Gateway server{0};
+    Client seller{server.port()}, buyer{server.port()};
+    Frame f;
+    ASSERT_TRUE(seller.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(buyer.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(seller.send(order(1, 1, 1, 1, 0, 77, 2)));
+    ASSERT_TRUE(seller.receive(f));
+    ASSERT_TRUE(seller.receive(f));
+    ASSERT_TRUE(buyer.send(order(2, 2, 1, 0, 1, 0, 5)));
+    ASSERT_TRUE(buyer.receive(f));
+    EXPECT_EQ(f.payload[44], 0);
+    ASSERT_TRUE(buyer.receive(f));
+    EXPECT_EQ(f.payload[44], 1);
+    EXPECT_EQ(field(f, 61), 3U);
+    ASSERT_TRUE(buyer.receive(f));
+    EXPECT_EQ(f.payload[44], 5);
+    EXPECT_EQ(field(f, 61), 3U);
+    ASSERT_TRUE(seller.receive(f));
+    EXPECT_EQ(f.payload[44], 2);
+    EXPECT_EQ(field(f, 53), 2U);
+    EXPECT_EQ(field(f, 45), 77U);
+}
+
+TEST(GatewayExchange, DisconnectRetainsOwnerReportAndTradeAudit) {
+    Gateway server{0};
+    std::uint64_t seller_session = 0;
+    {
+        Client seller{server.port()};
+        Frame f;
+        ASSERT_TRUE(seller.exchange(message(MessageType::Hello), f));
+        seller_session = field(f, 0);
+        ASSERT_TRUE(seller.send(order(1, 9, 1, 1, 0, 50, 3)));
+        ASSERT_TRUE(seller.receive(f));
+        ASSERT_TRUE(seller.receive(f));
+    }
+    std::this_thread::sleep_for(100ms);
+    Client buyer{server.port()};
+    Frame f;
+    ASSERT_TRUE(buyer.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(buyer.send(order(2, 10, 1, 0, 1, 0, 3)));
+    ASSERT_TRUE(buyer.receive(f));
+    ASSERT_TRUE(buyer.receive(f));
+    server.stop();
+    ASSERT_EQ(server.trade_count(), 1U);
+    const auto report = server.pending_report(seller_session);
+    ASSERT_TRUE(report);
+    EXPECT_EQ(report->kind, chronos::exchange::ReportKind::Filled);
+    EXPECT_EQ(report->quantity, 3U);
 }

@@ -47,7 +47,7 @@ bool valid_size(MessageType type, std::size_t size) {
     case MessageType::OrderAck:
         return size == 17;
     case MessageType::Execution:
-        return size == 40;
+        return size == 69;
     case MessageType::Echo:
     case MessageType::EchoReply:
         return true;

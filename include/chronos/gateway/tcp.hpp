@@ -1,10 +1,12 @@
 #pragma once
 
+#include "chronos/exchange/exchange.hpp"
 #include "chronos/gateway/protocol.hpp"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <span>
 #include <string>
@@ -42,6 +44,10 @@ class Gateway {
     [[nodiscard]] std::uint16_t port() const noexcept;
     [[nodiscard]] bool running() const noexcept;
     void stop() noexcept;
+    // Only call after stop() has joined the owner thread. Volatile, bounded audit.
+    [[nodiscard]] std::size_t trade_count() const noexcept;
+    [[nodiscard]] std::optional<exchange::AuditTrade> trade(std::size_t index) const noexcept;
+    [[nodiscard]] std::optional<exchange::Report> pending_report(std::uint64_t session) const;
 
   private:
     class Impl;
@@ -52,12 +58,15 @@ class Client {
   public:
     explicit Client(std::uint16_t port,
                     std::chrono::milliseconds timeout = std::chrono::seconds(2));
+    [[nodiscard]] bool send(const Frame &request);
+    [[nodiscard]] bool receive(Frame &response);
     [[nodiscard]] bool exchange(const Frame &request, Frame &response);
 
   private:
     Socket socket_;
     std::chrono::milliseconds timeout_;
     FrameDecoder decoder_;
+    std::deque<Frame> pending_;
 };
 
 } // namespace chronos::gateway
