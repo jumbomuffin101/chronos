@@ -11,7 +11,7 @@ namespace chronos::gateway {
 
 inline constexpr std::size_t header_size = 16;
 inline constexpr std::size_t max_frame_size = 4096;
-inline constexpr std::uint8_t protocol_version = 2;
+inline constexpr std::uint8_t protocol_version = 3;
 
 enum class MessageType : std::uint8_t {
     Hello = 1,
@@ -24,7 +24,11 @@ enum class MessageType : std::uint8_t {
     SubmitOrder = 16,
     CancelOrder = 17,
     OrderAck = 18,
-    Execution = 19
+    Execution = 19,
+    Subscribe = 20,
+    Unsubscribe = 21,
+    MarketAck = 22,
+    MarketData = 23
 };
 enum class ProtocolError : std::uint16_t {
     None = 0,

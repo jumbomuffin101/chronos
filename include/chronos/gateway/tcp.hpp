@@ -71,12 +71,18 @@ class Gateway {
   public:
     explicit Gateway(std::uint16_t port = 0, std::size_t max_sessions = 16,
                      std::chrono::milliseconds idle_timeout = std::chrono::seconds(5),
-                     TransportOptions options = {});
+                     TransportOptions options = {}, exchange::RiskLimits default_risk = {});
     ~Gateway();
     Gateway(const Gateway &) = delete;
     Gateway &operator=(const Gateway &) = delete;
     [[nodiscard]] std::uint16_t port() const noexcept;
     [[nodiscard]] bool running() const noexcept;
+    // Synchronous local administration; applied on the owner thread. A false
+    // return means the request was rejected or cancelled before application.
+    [[nodiscard]] bool configure_risk(std::uint64_t session, const exchange::RiskLimits &limits,
+                                      std::chrono::milliseconds timeout = std::chrono::seconds(2));
+    [[nodiscard]] bool set_killed(std::uint64_t session, bool killed,
+                                  std::chrono::milliseconds timeout = std::chrono::seconds(2));
     void stop() noexcept;
     // Only call after stop() has joined the owner thread. Volatile, bounded audit.
     [[nodiscard]] std::size_t trade_count() const noexcept;

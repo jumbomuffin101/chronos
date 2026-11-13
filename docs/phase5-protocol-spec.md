@@ -1,7 +1,7 @@
-# Chronos loopback protocol, version 2
+# Chronos loopback protocol, version 3
 
 This simulator binds IPv4 `127.0.0.1` only. Any local process can connect;
-session IDs are not credentials. There is no TLS, authentication, risk,
+session IDs are not credentials. There is no TLS, production authentication,
 durable log, replay or exactly-once delivery. The exchange integration is
 experimental and must not be used for real trading.
 
@@ -11,7 +11,7 @@ All multibyte integers are big endian. Signed prices use two's-complement
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 4 | Total frame length including header, 16–4096 |
-| 4 | 1 | Version, exactly 2 |
+| 4 | 1 | Version, exactly 3 |
 | 5 | 1 | Message type |
 | 6 | 2 | Flags, zero |
 | 8 | 8 | Client request ID |
@@ -28,6 +28,9 @@ All multibyte integers are big endian. Signed prices use two's-complement
 | 17 | CancelOrder | client order ID u64 |
 | 18 | OrderAck | rejected client order ID u64, result u8, zero u64 |
 | 19 | Execution | fields below |
+| 20 / 21 | Subscribe / Unsubscribe | symbol u32 |
+| 22 | MarketAck | symbol u32, status u8 (0 success, 1 failure) |
+| 23 | MarketData | fields below |
 
 Submit payload offsets are 0 client order ID, 8 symbol, 12 side (0 buy, 1
 sell), 13 type (0 limit, 1 market), 14 price, and 22 quantity. Limit prices
@@ -54,6 +57,43 @@ Global sequence assignment follows dispatch order; independent TCP connections
 can deliver those reports at different times and do not provide a global
 delivery order.
 
+Risk rejections also use OrderAck: 9 kill switch, 10 symbol denied, 11 quantity,
+12 notional or exposure, 13 open-order limit, 14 position limit, 15 market
+price bound, 16 arithmetic overflow. They do not consume the request ID or
+change the book. Each connection is a distinct local development account; this
+is not authentication. An embedding application sets a common default policy
+when constructing the gateway and may configure a session or toggle its kill
+switch through the bounded local owner-thread control interface. Configuration
+changes require no open orders; the kill switch blocks submissions, permits
+owner cancellations and does not cancel outstanding orders. Empty symbol
+permissions mean all symbols. Market orders use a configured finite maximum
+price for checked worst-case notional and reject if executable levels exceed it.
+This ceiling is not a minimum sell-price floor or market-order slippage guard.
+For a crossing sell limit, notional checks conservatively price the full order
+at the higher of its limit and the best executable resting bid.
+
+MarketData has a 61-byte payload: symbol u32 at offset 0, per-symbol sequence
+u64 at 4, kind u8 at 12, bid price i64 at 13 and bid quantity u64 at 21, ask
+price i64 at 29 and ask quantity u64 at 37, trade price i64 at 45 and trade
+quantity u64 at 53. Kind 0 is snapshot, 1 is best-book update, 2 is trade,
+and 3 is a gap. Missing sides use zero price and quantity. Trade events contain
+only public price and quantity, never account or order identifiers. MarketData
+frames use request ID zero; the subscription acknowledgment echoes its request
+ID. A subscription queues a snapshot at sequence S before subsequent events
+greater than S. Trades are published in execution order, followed by a best-book
+event when the aggregate top changes. A symbol sequence advances for every
+trade and best-book event even without subscribers; exhaustion rejects the
+associated order or cancellation before commit.
+
+Each session can subscribe to at most 32 symbols, with at most 32 queued events
+per subscription. Overflow stops incremental publication for that subscription;
+once previously queued events drain, an explicit gap event reports the first
+missed sequence. Subscribe again to replace the old queue with a fresh snapshot;
+unsubscribe removes the subscription. A disconnect removes subscriptions even
+if private orders are retained. There is no durable replay or guarantee that a
+gap reaches a disconnected peer. The subscription generation used internally
+to protect in-flight writes is not a wire identifier.
+
 Protocol errors 1–10 retain their Phase 5A meanings; 11 is reserved for
 exchange rejection and 12 reports a full ingress batch. Invalid framing closes
 the connection after a best-effort error; a pre-handshake message does the same.
@@ -78,8 +118,7 @@ embedding process after `stop()`. There is no disk durability. Stop joins the
 owner and closes sockets; queued reports are not drained, although the audit
 remains available while the Gateway object lives. Idle timeout is based on I/O
 progress, not a total frame deadline. Unexpected worker failure stops service.
-Replacement, risk, market data, client recovery and production identity remain
-unimplemented.
+Replacement, durable recovery and production identity remain unimplemented.
 
 The Linux gateway enables `TCP_NODELAY` on accepted sockets by default; the
 sample client leaves it disabled by default. `TransportOptions` can explicitly
@@ -87,7 +126,7 @@ override either endpoint and can enable optional diagnostic tracing. These
 transport settings do not change protocol framing or delivery guarantees. See
 the [latency investigation](phase5b-tcp-latency-investigation.md).
 
-Phase 5A used version 1, whose execution type was a 40-byte reserved layout.
-Version 2 assigns that type a different 69-byte layout and changes order-entry
-behavior, so version 1 peers are explicitly rejected rather than being silently
-misinterpreted. There is no version negotiation.
+Phase 5A used version 1 and Phase 5B used version 2. Version 3 explicitly
+rejects both older versions; there is no version negotiation. Version 3 adds
+risk rejection codes and market-data messages while retaining the version 2
+order and execution payload layouts.

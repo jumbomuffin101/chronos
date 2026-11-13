@@ -115,10 +115,15 @@ TEST(ExchangeAllocation, StagedFillLeavesLiveStateUntouchedOnAllocationFailure) 
         Exchange exchange;
         ASSERT_TRUE(exchange.open_session(1));
         ASSERT_TRUE(exchange.open_session(2));
+        ASSERT_TRUE(exchange.open_session(3));
         ASSERT_EQ(exchange.submit(1, 1, 1, SymbolId{1}, Side::Sell, OrderType::Limit, 10, 5),
                   ExchangeResult::Accepted);
         exchange.pop(1);
         exchange.pop(1);
+        ASSERT_TRUE(exchange.subscribe(3, SymbolId{1}));
+        const auto snapshot = exchange.market_front(3);
+        ASSERT_TRUE(snapshot);
+        exchange.market_pop(3, *snapshot);
         bool threw = false;
         allocations_until_failure = fail_at;
         try {
@@ -142,6 +147,9 @@ TEST(ExchangeAllocation, StagedFillLeavesLiveStateUntouchedOnAllocationFailure) 
             EXPECT_FALSE(exchange.front(1));
             EXPECT_FALSE(exchange.front(2));
             EXPECT_EQ(exchange.trade_count(), 0U);
+            EXPECT_EQ(exchange.position(1, SymbolId{1}), 0);
+            EXPECT_EQ(exchange.position(2, SymbolId{1}), 0);
+            EXPECT_FALSE(exchange.market_front(3));
         }
     }
     EXPECT_TRUE(completed);
@@ -172,6 +180,38 @@ TEST(ExchangeAllocation, CancellationStagingFailurePreservesOrder) {
             ASSERT_TRUE(exchange.find(1, 1));
             EXPECT_EQ(exchange.find(1, 1)->quantity, 5U);
             EXPECT_FALSE(exchange.front(1));
+        } catch (...) {
+            allocations_until_failure = -1;
+            throw;
+        }
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GT(failures, 3);
+}
+
+TEST(ExchangeAllocation, SnapshotStagingFailureDoesNotCreateSubscription) {
+    using chronos::exchange::Exchange;
+    using ExchangeResult = chronos::exchange::Result;
+    bool completed = false;
+    int failures = 0;
+    for (int fail_at = 0; fail_at < 128 && !completed; ++fail_at) {
+        Exchange exchange;
+        ASSERT_TRUE(exchange.open_session(1));
+        ASSERT_TRUE(exchange.open_session(2));
+        ASSERT_EQ(exchange.submit(1, 1, 1, SymbolId{1}, Side::Sell, OrderType::Limit, 10, 5),
+                  ExchangeResult::Accepted);
+        allocations_until_failure = fail_at;
+        try {
+            const bool ok = exchange.subscribe(2, SymbolId{1});
+            allocations_until_failure = -1;
+            ASSERT_TRUE(ok);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            ++failures;
+            EXPECT_FALSE(exchange.market_front(2));
+            ASSERT_TRUE(exchange.find(1, 1));
+            EXPECT_EQ(exchange.find(1, 1)->quantity, 5U);
         } catch (...) {
             allocations_until_failure = -1;
             throw;

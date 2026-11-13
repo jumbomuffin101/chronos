@@ -27,6 +27,10 @@ bool known(MessageType type) {
     case MessageType::CancelOrder:
     case MessageType::OrderAck:
     case MessageType::Execution:
+    case MessageType::Subscribe:
+    case MessageType::Unsubscribe:
+    case MessageType::MarketAck:
+    case MessageType::MarketData:
         return true;
     }
     return false;
@@ -48,6 +52,13 @@ bool valid_size(MessageType type, std::size_t size) {
         return size == 17;
     case MessageType::Execution:
         return size == 69;
+    case MessageType::Subscribe:
+    case MessageType::Unsubscribe:
+        return size == 4;
+    case MessageType::MarketAck:
+        return size == 5;
+    case MessageType::MarketData:
+        return size == 61;
     case MessageType::Echo:
     case MessageType::EchoReply:
         return true;

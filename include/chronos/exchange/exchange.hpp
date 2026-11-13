@@ -4,8 +4,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <vector>
 
 namespace chronos::exchange {
 
@@ -19,7 +21,27 @@ enum class Result {
     NotFound,
     InvalidOrder,
     Capacity,
-    CounterExhausted
+    CounterExhausted,
+    RiskKilled,
+    RiskSymbol,
+    RiskQuantity,
+    RiskNotional,
+    RiskOpenOrders,
+    RiskPosition,
+    RiskMarketBound,
+    RiskOverflow
+};
+struct RiskLimits {
+    std::uint64_t max_order_quantity =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    std::uint64_t max_order_notional = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t max_open_notional = std::numeric_limits<std::uint64_t>::max();
+    std::size_t max_open_orders = 1024;
+    std::uint64_t max_abs_position =
+        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
+    core::Price max_market_price = 1'000'000;
+    // Empty means every symbol in this local development policy.
+    std::vector<std::uint32_t> allowed_symbols;
 };
 enum class ReportKind { Accepted, PartialFill, Filled, Resting, Cancelled, MarketRemainder };
 struct Report {
@@ -42,16 +64,35 @@ struct AuditTrade {
     core::Price price;
     core::Quantity quantity;
 };
+enum class MarketKind : std::uint8_t { Snapshot, Book, Trade, Gap };
+struct MarketEvent {
+    std::uint32_t symbol;
+    std::uint64_t sequence;
+    std::uint64_t generation; // local transport token, not a public identifier
+    MarketKind kind;
+    core::Price bid_price, ask_price, trade_price;
+    core::Quantity bid_quantity, ask_quantity, trade_quantity;
+};
 
 class Exchange {
   public:
     explicit Exchange(std::size_t max_sessions = 16, std::size_t max_orders = 1024,
                       std::size_t max_reports_per_session = 128,
-                      std::size_t max_requests_per_session = 1024);
+                      std::size_t max_requests_per_session = 1024,
+                      std::uint64_t initial_feed_sequence = 0);
     ~Exchange();
     Exchange(const Exchange &) = delete;
     Exchange &operator=(const Exchange &) = delete;
     [[nodiscard]] bool open_session(std::uint64_t session);
+    // Configure only when no orders are open; kill state can change at any time.
+    [[nodiscard]] bool configure_risk(std::uint64_t session, const RiskLimits &limits);
+    [[nodiscard]] bool set_killed(std::uint64_t session, bool killed) noexcept;
+    [[nodiscard]] std::optional<std::int64_t> position(std::uint64_t session,
+                                                       core::SymbolId symbol) const noexcept;
+    [[nodiscard]] bool subscribe(std::uint64_t session, core::SymbolId symbol);
+    [[nodiscard]] bool unsubscribe(std::uint64_t session, core::SymbolId symbol);
+    [[nodiscard]] std::optional<MarketEvent> market_front(std::uint64_t session) const;
+    void market_pop(std::uint64_t session, const MarketEvent &sent) noexcept;
     // Retain sessions with order history or pending reports; their state cannot
     // be safely recycled without a recovery policy.
     void close_session(std::uint64_t session) noexcept;

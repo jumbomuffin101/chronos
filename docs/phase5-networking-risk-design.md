@@ -1,6 +1,6 @@
 # Phase 5 proposal: networking and pre-trade risk
 
-This document is a design proposal. Phase 5B adds simulated order routing and cancellation over the loopback gateway; [the integration design](phase5b-exchange-integration-design.md) and [protocol](phase5-protocol-spec.md) describe the implemented behavior. Risk, recovery and market data remain unimplemented. The Phase 4 engine is single-threaded, in-memory and per symbol. Its book-maintenance methods are not exchange-level cancel/replace operations and its command/event counters are per engine, not globally ordered across symbols. Phase 5 must not treat them as a durable log or as globally unique identifiers.
+This document is a design proposal. Phase 5C adds basic local account risk and public market data to the loopback gateway; [the Phase 5C design](phase5c-risk-marketdata-design.md) and [protocol](phase5-protocol-spec.md) describe implemented behavior. Durable recovery and production authentication remain unimplemented. The Phase 4 engine is single-threaded, in-memory and per symbol. Its book-maintenance methods are not exchange-level cancel/replace operations and its command/event counters are per engine, not globally ordered across symbols. Phase 5 must not treat them as a durable log or as globally unique identifiers.
 
 ## MVP boundary and interfaces
 

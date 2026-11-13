@@ -8,9 +8,11 @@
 #include <bit>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <mutex>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -116,6 +118,15 @@ bool write_all(int fd, std::span<const std::uint8_t> bytes, std::chrono::millise
 }
 
 class Gateway::Impl {
+    struct Control {
+        std::uint64_t session;
+        bool configure;
+        bool killed;
+        exchange::RiskLimits limits;
+        std::mutex mutex;
+        std::condition_variable completed;
+        bool started = false, done = false, cancelled = false, result = false;
+    };
     struct Session {
         Socket socket;
         FrameDecoder decoder;
@@ -126,6 +137,7 @@ class Gateway::Impl {
         bool closing = false;
         bool dead = false;
         bool report_inflight = false;
+        std::optional<exchange::MarketEvent> market_inflight;
         std::uint64_t report_request = 0;
         std::uint8_t report_kind = 0;
         Clock::time_point activity = Clock::now();
@@ -133,10 +145,13 @@ class Gateway::Impl {
 
   public:
     Impl(std::uint16_t port, std::size_t maximum, std::chrono::milliseconds idle,
-         TransportOptions options)
+         TransportOptions options, exchange::RiskLimits default_risk)
         : listener_(::socket(AF_INET, SOCK_STREAM, 0)), maximum_(maximum), idle_(idle),
-          exchange_(maximum), options_(options) {
-        if (listener_.get() < 0 || maximum == 0 || maximum > 1024 || idle.count() <= 0)
+          exchange_(maximum), options_(options), default_risk_(std::move(default_risk)) {
+        if (listener_.get() < 0 || maximum == 0 || maximum > 1024 || idle.count() <= 0 ||
+            default_risk_.max_market_price <= 0 || default_risk_.allowed_symbols.size() > 1024 ||
+            default_risk_.max_abs_position >
+                static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
             throw std::invalid_argument("invalid gateway configuration");
         nonblocking(listener_.get());
         int yes = 1;
@@ -165,6 +180,32 @@ class Gateway::Impl {
     }
     std::uint16_t port() const noexcept { return port_; }
     bool running() const noexcept { return running_.load(); }
+    bool control(std::uint64_t session, bool configure, bool killed,
+                 const exchange::RiskLimits &limits, std::chrono::milliseconds timeout) {
+        if (timeout.count() <= 0 || timeout > std::chrono::seconds(60) ||
+            limits.allowed_symbols.size() > 1024)
+            return false;
+        auto command = std::make_shared<Control>();
+        command->session = session;
+        command->configure = configure;
+        command->killed = killed;
+        command->limits = limits;
+        {
+            std::lock_guard lock{controls_mutex_};
+            if (!running_.load() || controls_.size() >= 32)
+                return false;
+            controls_.push_back(command);
+        }
+        std::unique_lock lock{command->mutex};
+        if (!command->completed.wait_for(lock, timeout, [&] { return command->done; })) {
+            if (!command->started) {
+                command->cancelled = true;
+                return false;
+            }
+            command->completed.wait(lock, [&] { return command->done; });
+        }
+        return command->result;
+    }
     std::size_t trade_count() const noexcept {
         return running_.load() ? 0 : exchange_.trade_count();
     }
@@ -176,6 +217,35 @@ class Gateway::Impl {
     }
 
   private:
+    void process_controls() {
+        std::vector<std::shared_ptr<Control>> commands;
+        {
+            std::lock_guard lock{controls_mutex_};
+            commands.swap(controls_);
+        }
+        for (const auto &command : commands) {
+            {
+                std::lock_guard lock{command->mutex};
+                if (command->cancelled)
+                    continue;
+                command->started = true;
+            }
+            bool result = false;
+            try {
+                result = command->configure
+                             ? exchange_.configure_risk(command->session, command->limits)
+                             : exchange_.set_killed(command->session, command->killed);
+            } catch (...) {
+                result = false;
+            }
+            {
+                std::lock_guard lock{command->mutex};
+                command->result = result;
+                command->done = true;
+            }
+            command->completed.notify_one();
+        }
+    }
     bool queue(Session &session, const Frame &frame) {
         std::vector<std::uint8_t> bytes;
         if (!encode_frame(frame, bytes) ||
@@ -211,7 +281,8 @@ class Gateway::Impl {
             response = frame;
             response.type = MessageType::EchoReply;
         } else if (frame.type == MessageType::SubmitOrder ||
-                   frame.type == MessageType::CancelOrder) {
+                   frame.type == MessageType::CancelOrder || frame.type == MessageType::Subscribe ||
+                   frame.type == MessageType::Unsubscribe) {
             if (!ingress.push(session.id, frame))
                 response = error_frame(ProtocolError::IngressFull, frame.request_id);
             else {
@@ -227,6 +298,23 @@ class Gateway::Impl {
     void dispatch(Session &session, const Frame &frame) {
         trace(options_.trace, TracePoint::Dispatch, session.id, frame.request_id);
         const auto *p = frame.payload.data();
+        if (frame.type == MessageType::Subscribe || frame.type == MessageType::Unsubscribe) {
+            const auto symbol = (static_cast<std::uint32_t>(p[0]) << 24) |
+                                (static_cast<std::uint32_t>(p[1]) << 16) |
+                                (static_cast<std::uint32_t>(p[2]) << 8) | p[3];
+            const bool ok = frame.type == MessageType::Subscribe
+                                ? exchange_.subscribe(session.id, core::SymbolId{symbol})
+                                : exchange_.unsubscribe(session.id, core::SymbolId{symbol});
+            Frame ack;
+            ack.type = MessageType::MarketAck;
+            ack.request_id = frame.request_id;
+            ack.payload_size = 5;
+            std::copy_n(p, 4, ack.payload.begin());
+            ack.payload[4] = ok ? 0 : 1;
+            if (!queue(session, ack))
+                session.dead = true;
+            return;
+        }
         const auto client = wire64(p);
         exchange::Result result;
         trace(options_.trace, TracePoint::TransactionStart, session.id, frame.request_id);
@@ -285,13 +373,41 @@ class Gateway::Impl {
               session.report_kind);
         return true;
     }
+    bool queue_market(Session &session) {
+        if (session.market_inflight || session.report_inflight || !session.output.empty())
+            return true;
+        const auto event = exchange_.market_front(session.id);
+        if (!event)
+            return true;
+        Frame frame;
+        frame.type = MessageType::MarketData;
+        frame.payload_size = 61;
+        auto *p = frame.payload.data();
+        p[0] = static_cast<std::uint8_t>(event->symbol >> 24);
+        p[1] = static_cast<std::uint8_t>(event->symbol >> 16);
+        p[2] = static_cast<std::uint8_t>(event->symbol >> 8);
+        p[3] = static_cast<std::uint8_t>(event->symbol);
+        put64(p + 4, event->sequence);
+        p[12] = static_cast<std::uint8_t>(event->kind);
+        put64(p + 13, std::bit_cast<std::uint64_t>(event->bid_price));
+        put64(p + 21, event->bid_quantity);
+        put64(p + 29, std::bit_cast<std::uint64_t>(event->ask_price));
+        put64(p + 37, event->ask_quantity);
+        put64(p + 45, std::bit_cast<std::uint64_t>(event->trade_price));
+        put64(p + 53, event->trade_quantity);
+        if (!queue(session, frame))
+            return false;
+        session.market_inflight = *event;
+        return true;
+    }
     void run(std::stop_token stop) noexcept {
         try {
             std::vector<Session> sessions;
             while (!stop.stop_requested()) {
+                process_controls();
                 detail::Ingress ingress;
                 for (auto &s : sessions)
-                    if (!s.dead && !queue_report(s))
+                    if (!s.dead && (!queue_report(s) || !queue_market(s)))
                         s.dead = true;
                 const std::size_t count = sessions.size();
                 std::vector<pollfd> fds;
@@ -330,6 +446,10 @@ class Gateway::Impl {
                         session.id = ++next_id_;
                         if (!exchange_.open_session(session.id))
                             continue;
+                        if (!exchange_.configure_risk(session.id, default_risk_)) {
+                            exchange_.close_session(session.id);
+                            continue;
+                        }
                         trace(options_.trace, TracePoint::SocketConfigured, session.id, 0,
                               options_.tcp_nodelay.value_or(true) ? 1 : 0);
                         sessions.push_back(std::move(session));
@@ -391,6 +511,10 @@ class Gateway::Impl {
                                 exchange_.pop(s.id);
                                 s.report_inflight = false;
                             }
+                            if (s.market_inflight) {
+                                exchange_.market_pop(s.id, *s.market_inflight);
+                                s.market_inflight.reset();
+                            }
                         }
                     }
                     if ((events & POLLHUP) != 0 && (events & POLLIN) == 0)
@@ -429,15 +553,25 @@ class Gateway::Impl {
     std::uint64_t next_id_ = 0;
     exchange::Exchange exchange_;
     TransportOptions options_;
+    exchange::RiskLimits default_risk_;
+    std::mutex controls_mutex_;
+    std::vector<std::shared_ptr<Control>> controls_;
     std::atomic_bool running_{true};
     std::jthread thread_;
 };
 Gateway::Gateway(std::uint16_t port, std::size_t max_sessions, std::chrono::milliseconds idle,
-                 TransportOptions options)
-    : impl_(std::make_unique<Impl>(port, max_sessions, idle, options)) {}
+                 TransportOptions options, exchange::RiskLimits default_risk)
+    : impl_(std::make_unique<Impl>(port, max_sessions, idle, options, std::move(default_risk))) {}
 Gateway::~Gateway() = default;
 std::uint16_t Gateway::port() const noexcept { return impl_->port(); }
 bool Gateway::running() const noexcept { return impl_->running(); }
+bool Gateway::configure_risk(std::uint64_t session, const exchange::RiskLimits &limits,
+                             std::chrono::milliseconds timeout) {
+    return impl_->control(session, true, false, limits, timeout);
+}
+bool Gateway::set_killed(std::uint64_t session, bool killed, std::chrono::milliseconds timeout) {
+    return impl_->control(session, false, killed, {}, timeout);
+}
 void Gateway::stop() noexcept { impl_->stop(); }
 std::size_t Gateway::trade_count() const noexcept { return impl_->trade_count(); }
 std::optional<exchange::AuditTrade> Gateway::trade(std::size_t index) const noexcept {

@@ -16,9 +16,21 @@ std::mutex id_mutex;
 std::uint64_t last_internal_id = 0;
 } // namespace
 struct Exchange::State {
+    struct Subscription {
+        std::uint64_t generation;
+        std::vector<MarketEvent> events;
+        std::uint64_t gap_sequence = 0;
+        bool gap = false;
+        bool gap_sent = false;
+    };
     struct Session {
         std::vector<std::uint64_t> requests;
         std::vector<Report> reports;
+        RiskLimits limits;
+        bool killed = false;
+        std::map<std::uint32_t, std::int64_t> positions;
+        std::map<std::uint32_t, Subscription> subscriptions;
+        std::uint64_t subscription_generation = 0;
     };
     struct Order {
         std::uint64_t session, client, internal, request;
@@ -29,6 +41,8 @@ struct Exchange::State {
     std::map<std::uint32_t, std::unique_ptr<matching::MatchingEngine>> engines;
     std::vector<Order> orders;
     std::vector<AuditTrade> trades;
+    std::map<std::uint32_t, std::uint64_t> feed_sequences;
+    std::uint64_t initial_feed_sequence = 0;
     std::uint64_t command = 0, event = 0;
 
     std::unique_ptr<State> clone() const {
@@ -36,6 +50,8 @@ struct Exchange::State {
         out->sessions = sessions;
         out->orders = orders;
         out->trades = trades;
+        out->feed_sequences = feed_sequences;
+        out->initial_feed_sequence = initial_feed_sequence;
         out->command = command;
         out->event = event;
         for (const auto &[symbol, engine] : engines)
@@ -60,15 +76,73 @@ struct Exchange::State {
         return event == std::numeric_limits<std::uint64_t>::max() ? Result::CounterExhausted
                                                                   : Result::Capacity;
     }
+    bool update_position(std::uint64_t session, std::uint32_t symbol, bool buy,
+                         std::uint64_t quantity) {
+        if (quantity > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+            return false;
+        auto &value = sessions.at(session).positions[symbol];
+        const auto q = static_cast<std::int64_t>(quantity);
+        if (buy) {
+            if (value > std::numeric_limits<std::int64_t>::max() - q)
+                return false;
+            value += q;
+        } else {
+            if (value < std::numeric_limits<std::int64_t>::min() + q)
+                return false;
+            value -= q;
+        }
+        return true;
+    }
+    MarketEvent top(std::uint32_t symbol, MarketKind kind, std::uint64_t sequence) const {
+        MarketEvent event{symbol, sequence, 0, kind, 0, 0, 0, 0, 0, 0};
+        const auto it = engines.find(symbol);
+        if (it == engines.end())
+            return event;
+        const auto bid = it->second->depth(core::Side::Buy, 1);
+        const auto ask = it->second->depth(core::Side::Sell, 1);
+        if (!bid.empty()) {
+            event.bid_price = bid[0].price;
+            event.bid_quantity = bid[0].quantity;
+        }
+        if (!ask.empty()) {
+            event.ask_price = ask[0].price;
+            event.ask_quantity = ask[0].quantity;
+        }
+        return event;
+    }
+    bool publish(MarketEvent event) {
+        auto &sequence =
+            feed_sequences.try_emplace(event.symbol, initial_feed_sequence).first->second;
+        if (sequence == std::numeric_limits<std::uint64_t>::max())
+            return false;
+        event.sequence = ++sequence;
+        for (auto &[id, session] : sessions) {
+            (void)id;
+            const auto it = session.subscriptions.find(event.symbol);
+            if (it == session.subscriptions.end() || it->second.gap)
+                continue;
+            auto &sub = it->second;
+            if (sub.events.size() >= 32) {
+                sub.gap = true;
+                sub.gap_sequence = event.sequence;
+                continue;
+            }
+            event.generation = sub.generation;
+            sub.events.push_back(event);
+        }
+        return true;
+    }
 };
 
 static_assert(std::is_nothrow_move_constructible_v<Report>);
 static_assert(std::is_nothrow_destructible_v<Report>);
 
 Exchange::Exchange(std::size_t sessions, std::size_t orders, std::size_t reports,
-                   std::size_t requests)
+                   std::size_t requests, std::uint64_t initial_feed_sequence)
     : state_(std::make_unique<State>()), max_sessions_(sessions), max_orders_(orders),
-      max_reports_(reports), max_requests_(requests) {}
+      max_reports_(reports), max_requests_(requests) {
+    state_->initial_feed_sequence = initial_feed_sequence;
+}
 Exchange::~Exchange() = default;
 bool Exchange::open_session(std::uint64_t session) {
     if (session == 0 || state_->sessions.size() >= max_sessions_ ||
@@ -76,9 +150,111 @@ bool Exchange::open_session(std::uint64_t session) {
         return false;
     return state_->sessions.try_emplace(session).second;
 }
+bool Exchange::configure_risk(std::uint64_t session, const RiskLimits &limits) {
+    const auto it = state_->sessions.find(session);
+    if (it == state_->sessions.end() || limits.max_market_price <= 0 ||
+        limits.allowed_symbols.size() > 1024 ||
+        limits.max_abs_position >
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+        return false;
+    if (std::any_of(state_->orders.begin(), state_->orders.end(), [=](const State::Order &order) {
+            return order.session == session && order.open;
+        }))
+        return false;
+    for (const auto &[symbol, pos] : it->second.positions) {
+        (void)symbol;
+        const auto magnitude =
+            pos < 0 ? static_cast<std::uint64_t>(-(pos + 1)) + 1 : static_cast<std::uint64_t>(pos);
+        if (magnitude > limits.max_abs_position)
+            return false;
+    }
+    auto next = state_->clone();
+    next->sessions.at(session).limits = limits;
+    state_.swap(next);
+    return true;
+}
+bool Exchange::set_killed(std::uint64_t session, bool killed) noexcept {
+    const auto it = state_->sessions.find(session);
+    if (it == state_->sessions.end())
+        return false;
+    it->second.killed = killed;
+    return true;
+}
+std::optional<std::int64_t> Exchange::position(std::uint64_t session,
+                                               core::SymbolId symbol) const noexcept {
+    const auto it = state_->sessions.find(session);
+    if (it == state_->sessions.end())
+        return std::nullopt;
+    const auto p = it->second.positions.find(symbol.value());
+    return p == it->second.positions.end() ? 0 : p->second;
+}
+bool Exchange::subscribe(std::uint64_t session, core::SymbolId symbol) {
+    const auto found = state_->sessions.find(session);
+    if (found == state_->sessions.end() ||
+        (found->second.subscriptions.size() >= 32 &&
+         !found->second.subscriptions.contains(symbol.value())) ||
+        found->second.subscription_generation == std::numeric_limits<std::uint64_t>::max())
+        return false;
+    auto next = state_->clone();
+    auto &account = next->sessions.at(session);
+    const auto generation = ++account.subscription_generation;
+    auto &subscription = account.subscriptions[symbol.value()];
+    subscription = State::Subscription{generation, {}, 0, false, false};
+    const auto seq = next->feed_sequences.find(symbol.value());
+    auto snapshot =
+        next->top(symbol.value(), MarketKind::Snapshot,
+                  seq == next->feed_sequences.end() ? next->initial_feed_sequence : seq->second);
+    snapshot.generation = generation;
+    subscription.events.push_back(snapshot);
+    state_.swap(next);
+    return true;
+}
+bool Exchange::unsubscribe(std::uint64_t session, core::SymbolId symbol) {
+    const auto it = state_->sessions.find(session);
+    if (it == state_->sessions.end() || !it->second.subscriptions.contains(symbol.value()))
+        return false;
+    auto next = state_->clone();
+    next->sessions.at(session).subscriptions.erase(symbol.value());
+    state_.swap(next);
+    return true;
+}
+std::optional<MarketEvent> Exchange::market_front(std::uint64_t session) const {
+    const auto it = state_->sessions.find(session);
+    if (it == state_->sessions.end())
+        return std::nullopt;
+    for (const auto &[symbol, sub] : it->second.subscriptions) {
+        if (!sub.events.empty())
+            return sub.events.front();
+        if (sub.gap && !sub.gap_sent)
+            return MarketEvent{
+                symbol, sub.gap_sequence, sub.generation, MarketKind::Gap, 0, 0, 0, 0, 0, 0};
+    }
+    return std::nullopt;
+}
+void Exchange::market_pop(std::uint64_t session, const MarketEvent &sent) noexcept {
+    const auto it = state_->sessions.find(session);
+    if (it == state_->sessions.end())
+        return;
+    const auto sub = it->second.subscriptions.find(sent.symbol);
+    if (sub == it->second.subscriptions.end() || sub->second.generation != sent.generation)
+        return;
+    if (!sub->second.events.empty()) {
+        const auto &first = sub->second.events.front();
+        if (first.kind == sent.kind && first.sequence == sent.sequence)
+            sub->second.events.erase(sub->second.events.begin());
+    } else if (sent.kind == MarketKind::Gap && sub->second.gap &&
+               sent.sequence == sub->second.gap_sequence) {
+        sub->second.gap_sent = true;
+    }
+}
 void Exchange::close_session(std::uint64_t session) noexcept {
     const auto it = state_->sessions.find(session);
-    if (it == state_->sessions.end() || !it->second.reports.empty())
+    if (it == state_->sessions.end())
+        return;
+    // A disconnected participant may retain orders and private reports, but no
+    // longer consumes public feed capacity.
+    it->second.subscriptions.clear();
+    if (!it->second.reports.empty())
         return;
     if (std::any_of(state_->orders.begin(), state_->orders.end(),
                     [=](const State::Order &order) { return order.session == session; }))
@@ -101,6 +277,93 @@ Result Exchange::submit(std::uint64_t session, std::uint64_t request, std::uint6
             return o.session == session && o.client == client;
         }))
         return Result::DuplicateOrder;
+    const auto &account = s->second;
+    const auto &limits = account.limits;
+    if (account.killed)
+        return Result::RiskKilled;
+    if (!limits.allowed_symbols.empty() &&
+        std::find(limits.allowed_symbols.begin(), limits.allowed_symbols.end(), symbol.value()) ==
+            limits.allowed_symbols.end())
+        return Result::RiskSymbol;
+    if ((side != core::Side::Buy && side != core::Side::Sell) ||
+        (type != core::OrderType::Limit && type != core::OrderType::Market) ||
+        (type == core::OrderType::Limit && price <= 0) ||
+        (type == core::OrderType::Market && price != 0))
+        return Result::InvalidOrder;
+    if (quantity == 0 || quantity > limits.max_order_quantity ||
+        quantity > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+        return Result::RiskQuantity;
+    auto risk_price = static_cast<std::uint64_t>(
+        type == core::OrderType::Limit ? price : limits.max_market_price);
+    // A crossing sell executes at resting bid prices, which can exceed the
+    // incoming limit. Reserve the whole quantity at the highest executable
+    // price so both order and open-notional checks remain conservative.
+    if (type == core::OrderType::Limit && side == core::Side::Sell) {
+        const auto book = state_->engines.find(symbol.value());
+        if (book != state_->engines.end()) {
+            const auto bids = book->second->depth(core::Side::Buy, 1);
+            if (!bids.empty() && bids.front().price >= price)
+                risk_price = std::max(risk_price, static_cast<std::uint64_t>(bids.front().price));
+        }
+    }
+    if (risk_price > std::numeric_limits<std::uint64_t>::max() / quantity)
+        return Result::RiskOverflow;
+    const auto notional = risk_price * quantity;
+    if (notional > limits.max_order_notional)
+        return Result::RiskNotional;
+    std::size_t open_count = 0;
+    std::uint64_t open_notional = 0, same_side_reserved = 0;
+    for (const auto &entry : state_->orders) {
+        if (entry.session != session || !entry.open)
+            continue;
+        ++open_count;
+        const auto live = state_->engines.at(entry.symbol)->find(core::OrderId{entry.internal});
+        if (!live)
+            return Result::InvalidOrder;
+        const auto p = static_cast<std::uint64_t>(live->price);
+        if (p > std::numeric_limits<std::uint64_t>::max() / live->quantity)
+            return Result::RiskOverflow;
+        const auto amount = p * live->quantity;
+        if (amount > std::numeric_limits<std::uint64_t>::max() - open_notional)
+            return Result::RiskOverflow;
+        open_notional += amount;
+        if (entry.symbol == symbol.value() && live->side == side) {
+            if (live->quantity > std::numeric_limits<std::uint64_t>::max() - same_side_reserved)
+                return Result::RiskOverflow;
+            same_side_reserved += live->quantity;
+        }
+    }
+    if (type == core::OrderType::Limit && open_count >= limits.max_open_orders)
+        return Result::RiskOpenOrders;
+    if (notional > limits.max_open_notional || open_notional > limits.max_open_notional - notional)
+        return Result::RiskNotional;
+    const auto pos_it = account.positions.find(symbol.value());
+    const auto pos = pos_it == account.positions.end() ? 0 : pos_it->second;
+    const auto magnitude =
+        pos < 0 ? static_cast<std::uint64_t>(-(pos + 1)) + 1 : static_cast<std::uint64_t>(pos);
+    const auto max_pos = limits.max_abs_position;
+    if (magnitude > max_pos)
+        return Result::RiskPosition;
+    const auto capacity = side == core::Side::Buy
+                              ? (pos < 0 ? max_pos + magnitude : max_pos - magnitude)
+                              : (pos < 0 ? max_pos - magnitude : max_pos + magnitude);
+    if (quantity > capacity || same_side_reserved > capacity - quantity)
+        return Result::RiskPosition;
+    if (type == core::OrderType::Market) {
+        const auto book = state_->engines.find(symbol.value());
+        if (book != state_->engines.end()) {
+            auto remaining = quantity;
+            const auto other = side == core::Side::Buy ? core::Side::Sell : core::Side::Buy;
+            for (const auto &level :
+                 book->second->depth(other, std::numeric_limits<std::size_t>::max())) {
+                if (level.price > limits.max_market_price)
+                    return Result::RiskMarketBound;
+                if (level.quantity >= remaining)
+                    break;
+                remaining -= level.quantity;
+            }
+        }
+    }
     if (s->second.requests.size() >= max_requests_ || state_->orders.size() >= max_orders_)
         return Result::Capacity;
     if (state_->command == std::numeric_limits<std::uint64_t>::max())
@@ -108,6 +371,7 @@ Result Exchange::submit(std::uint64_t session, std::uint64_t request, std::uint6
     std::lock_guard lock{id_mutex};
     if (last_internal_id == std::numeric_limits<std::uint64_t>::max())
         return Result::CounterExhausted;
+    const auto before_book = state_->top(symbol.value(), MarketKind::Book, 0);
     auto next = state_->clone();
     auto &engine = next->engines[symbol.value()];
     if (!engine)
@@ -135,6 +399,12 @@ Result Exchange::submit(std::uint64_t session, std::uint64_t request, std::uint6
         auto *resting = next->internal(resting_id);
         if (!resting || outcome.reports.size() < 3 + 2 * i)
             return Result::InvalidOrder;
+        const auto buyer_session = side == core::Side::Buy ? session : resting->session;
+        const auto seller_session = side == core::Side::Sell ? session : resting->session;
+        if (buyer_session != seller_session &&
+            (!next->update_position(buyer_session, symbol.value(), true, trade.quantity) ||
+             !next->update_position(seller_session, symbol.value(), false, trade.quantity)))
+            return Result::RiskOverflow;
         const auto &resting_report = outcome.reports[1 + 2 * i];
         const auto &incoming_report = outcome.reports[2 + 2 * i];
         next->trades.push_back(
@@ -158,6 +428,20 @@ Result Exchange::submit(std::uint64_t session, std::uint64_t request, std::uint6
                           is_resting ? ReportKind::Resting : ReportKind::MarketRemainder, 0, 0, 0,
                           outcome.remaining))
             return next->report_failure();
+    }
+    for (const auto &trade : outcome.trades) {
+        MarketEvent event{symbol.value(), 0, 0, MarketKind::Trade, 0, 0,
+                          trade.price,    0, 0, trade.quantity};
+        if (!next->publish(event))
+            return Result::CounterExhausted;
+    }
+    const auto after_book = next->top(symbol.value(), MarketKind::Book, 0);
+    if (before_book.bid_price != after_book.bid_price ||
+        before_book.bid_quantity != after_book.bid_quantity ||
+        before_book.ask_price != after_book.ask_price ||
+        before_book.ask_quantity != after_book.ask_quantity) {
+        if (!next->publish(after_book))
+            return Result::CounterExhausted;
     }
     state_.swap(next);
     last_internal_id = internal_id;
@@ -183,6 +467,7 @@ Result Exchange::cancel(std::uint64_t session, std::uint64_t request, std::uint6
         return Result::Capacity;
     if (state_->command == std::numeric_limits<std::uint64_t>::max())
         return Result::CounterExhausted;
+    const auto before_book = state_->top(found->symbol, MarketKind::Book, 0);
     auto next = state_->clone();
     auto *order = next->internal(found->internal);
     const auto snapshot = next->engines.at(order->symbol)->find(core::OrderId{order->internal});
@@ -196,6 +481,14 @@ Result Exchange::cancel(std::uint64_t session, std::uint64_t request, std::uint6
     order->open = false;
     if (!next->report(max_reports_, *order, ReportKind::Cancelled, 0, 0, snapshot->quantity, 0))
         return next->report_failure();
+    const auto after_book = next->top(order->symbol, MarketKind::Book, 0);
+    if (before_book.bid_price != after_book.bid_price ||
+        before_book.bid_quantity != after_book.bid_quantity ||
+        before_book.ask_price != after_book.ask_price ||
+        before_book.ask_quantity != after_book.ask_quantity) {
+        if (!next->publish(after_book))
+            return Result::CounterExhausted;
+    }
     state_.swap(next);
     return Result::Accepted;
 }

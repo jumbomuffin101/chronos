@@ -149,6 +149,8 @@ TEST(Protocol, RejectsInvalidHeadersAndBoundedLengths) {
     auto v = input;
     v[4] = 1;
     check(v, ProtocolError::UnsupportedVersion);
+    v[4] = 2;
+    check(v, ProtocolError::UnsupportedVersion);
     v = input;
     v[5] = 255;
     check(v, ProtocolError::UnknownType);
@@ -169,6 +171,11 @@ TEST(Protocol, RejectsInvalidHeadersAndBoundedLengths) {
     invalid.payload_size = 1;
     std::vector<std::uint8_t> out;
     EXPECT_FALSE(encode_frame(invalid, out));
+    Frame sub = message(MessageType::Subscribe);
+    sub.payload_size = 4;
+    v = bytes(sub);
+    v[3] = 19;
+    check(v, ProtocolError::InvalidPayload);
 }
 
 TEST(Protocol, TruncatedAtEveryByteAndMaximumEcho) {
@@ -587,4 +594,93 @@ TEST(Gateway, CanDisableNoDelayForControlledComparison) {
     ASSERT_TRUE(client.exchange(message(MessageType::Hello), reply));
     server.stop();
     EXPECT_TRUE(capture.contains(TracePoint::SocketConfigured, 0, 0));
+}
+
+TEST(GatewayExchange, ThreeClientsReceivePublicSnapshotAndOrderedTradeUpdates) {
+    Gateway server{0};
+    Client seller{server.port()}, buyer{server.port()}, subscriber{server.port()};
+    Frame f;
+    ASSERT_TRUE(seller.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(buyer.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(subscriber.exchange(message(MessageType::Hello), f));
+    auto subscribe = message(MessageType::Subscribe, 44);
+    subscribe.payload_size = 4;
+    subscribe.payload[3] = 1;
+    ASSERT_TRUE(subscriber.exchange(subscribe, f));
+    ASSERT_EQ(f.type, MessageType::MarketAck);
+    EXPECT_EQ(f.payload[4], 0);
+    ASSERT_TRUE(subscriber.receive(f));
+    ASSERT_EQ(f.type, MessageType::MarketData);
+    EXPECT_EQ(f.payload[12], 0);
+    EXPECT_EQ(field(f, 4), 0U);
+    ASSERT_TRUE(seller.send(order(1, 1, 1, 1, 0, 100, 5)));
+    ASSERT_TRUE(seller.receive(f));
+    ASSERT_TRUE(seller.receive(f));
+    ASSERT_TRUE(subscriber.receive(f));
+    ASSERT_EQ(f.type, MessageType::MarketData);
+    EXPECT_EQ(f.payload[12], 1);
+    EXPECT_EQ(field(f, 4), 1U);
+    EXPECT_EQ(field(f, 29), 100U);
+    EXPECT_EQ(field(f, 37), 5U);
+    ASSERT_TRUE(buyer.send(order(2, 2, 1, 0, 1, 0, 3)));
+    ASSERT_TRUE(buyer.receive(f));
+    ASSERT_TRUE(buyer.receive(f));
+    ASSERT_TRUE(seller.receive(f));
+    ASSERT_TRUE(subscriber.receive(f));
+    ASSERT_EQ(f.type, MessageType::MarketData);
+    EXPECT_EQ(f.payload[12], 2);
+    EXPECT_EQ(field(f, 4), 2U);
+    EXPECT_EQ(field(f, 45), 100U);
+    EXPECT_EQ(field(f, 53), 3U);
+    ASSERT_TRUE(subscriber.receive(f));
+    ASSERT_EQ(f.type, MessageType::MarketData);
+    EXPECT_EQ(f.payload[12], 1);
+    EXPECT_EQ(field(f, 4), 3U);
+    EXPECT_EQ(field(f, 37), 2U);
+}
+
+TEST(GatewayExchange, ConfiguredRiskRejectsBeforeOrderAcceptance) {
+    chronos::exchange::RiskLimits limits;
+    limits.max_order_quantity = 2;
+    Gateway server{0, 2, 5s, {}, limits};
+    Client client{server.port()};
+    Frame f;
+    ASSERT_TRUE(client.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(client.exchange(order(7, 7, 1, 0, 0, 100, 3), f));
+    EXPECT_EQ(f.type, MessageType::OrderAck);
+    EXPECT_EQ(f.payload[8], static_cast<std::uint8_t>(chronos::exchange::Result::RiskQuantity));
+    ASSERT_TRUE(client.send(order(7, 7, 1, 0, 0, 100, 2)));
+    ASSERT_TRUE(client.receive(f));
+    EXPECT_EQ(f.payload[44], 0);
+    ASSERT_TRUE(client.receive(f));
+    EXPECT_EQ(f.payload[44], 3);
+}
+
+TEST(GatewayExchange, OwnerThreadAdminKillAllowsCancellation) {
+    Gateway server{0};
+    Client client{server.port()};
+    Frame f;
+    ASSERT_TRUE(client.exchange(message(MessageType::Hello), f));
+    const auto session = field(f, 0);
+    chronos::exchange::RiskLimits limits;
+    limits.max_order_quantity = 2;
+    ASSERT_TRUE(server.configure_risk(session, limits));
+    ASSERT_TRUE(client.send(order(1, 1, 1, 0, 0, 100, 2)));
+    ASSERT_TRUE(client.receive(f));
+    ASSERT_TRUE(client.receive(f));
+    ASSERT_TRUE(server.set_killed(session, true));
+    ASSERT_TRUE(client.exchange(order(2, 2, 1, 0, 0, 100, 1), f));
+    EXPECT_EQ(f.type, MessageType::OrderAck);
+    EXPECT_EQ(f.payload[8], static_cast<std::uint8_t>(chronos::exchange::Result::RiskKilled));
+    auto cancel = message(MessageType::CancelOrder, 2);
+    cancel.payload_size = 8;
+    write_u64(std::span<std::uint8_t, 8>{cancel.payload.data(), 8}, 1);
+    ASSERT_TRUE(client.send(cancel));
+    ASSERT_TRUE(client.receive(f));
+    EXPECT_EQ(f.payload[44], 4);
+    ASSERT_TRUE(server.set_killed(session, false));
+    ASSERT_TRUE(client.send(order(3, 2, 1, 0, 0, 100, 1)));
+    ASSERT_TRUE(client.receive(f));
+    ASSERT_TRUE(client.receive(f));
+    EXPECT_EQ(f.payload[44], 3);
 }
