@@ -222,3 +222,27 @@ test("an unsolicited old snapshot cannot overwrite a live book", () => {
   assert.equal(s.sequence, "9007199254740994");
   assert.equal(s.market?.bid, "100");
 });
+
+test("adapter unavailable differs from a lost session and uncertainty survives reconnect", () => {
+  let s = reducer(initialState, { type: "disconnect", unavailable: true });
+  assert.equal(s.browserStatus, "unavailable");
+  assert.equal(s.sessionUncertain, false);
+  s = reducer(s, { type: "new-session" });
+  assert.equal(s.browserStatus, "connecting");
+  s = reducer(s, { type: "browser.open" });
+  s = reducer(s, { type: "submit", order });
+  s = reducer(s, { type: "disconnect" });
+  assert.equal(s.orders[0].status, "uncertain");
+  s = reducer(s, { type: "new-session" });
+  s = reducer(s, { type: "browser.open" });
+  s = reducer(s, { type: "notice", text: "connected" });
+  assert.equal(s.sessionUncertain, true);
+  assert.equal(s.orders[0].status, "uncertain");
+});
+
+test("a delayed snapshot cannot revive a disconnected feed", () => {
+  let s = reducer(initialState, { type: "disconnect" });
+  s = reducer(s, { type: "message", message: snapshot, at: 1 });
+  assert.equal(s.feed, "disconnected");
+  assert.equal(s.market, null);
+});

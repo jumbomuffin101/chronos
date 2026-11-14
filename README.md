@@ -32,7 +32,13 @@ For an optimized build use `cmake --preset release` and `cmake --build --preset 
 
 ### Local dashboard
 
-With Node.js 22.22.2 and the Debug gateway built, start these in separate Linux/WSL terminals:
+With Node.js 22.22.2, the Debug gateway built, and `npm ci` run in `web`, start all three local services with:
+
+```sh
+node scripts/chronos-dev.mjs
+```
+
+Press Ctrl+C to stop the services started by the launcher. If the web dependencies live in a WSL-native copy, set `CHRONOS_WEB_DIR` to its absolute path; see [development](docs/development.md). Alternatively, start these in separate Linux/WSL terminals:
 
 ```sh
 ./build/debug/chronos_gateway 8088
@@ -41,6 +47,8 @@ cd web && npm run dev
 ```
 
 Open `http://127.0.0.1:3000`. The adapter listens on `127.0.0.1:8090` and checks the exact browser origin; the browser never connects directly to the exchange TCP protocol. This is an unauthenticated local simulation, not a production service. Outstanding orders and reports cannot be recovered after disconnect. The feed provides best bid/ask and observed trades, not full depth or historical charts. See [development](docs/development.md) for WSL filesystem guidance and checks.
+
+The [dashboard demo](docs/dashboard-demo.md) walks through a two-session simulated trade. The [Phase 6C report](docs/phase6c-implementation-report.md) describes browser tests, screenshots and limitations.
 
 Optional performance benchmarks and their limitations are described in the [benchmark methodology](docs/phase4-benchmark-methodology.md); the measured WSL2 baseline is in the [report](docs/phase4-benchmark-report.md). The [Phase 4B design](docs/phase4-optimization-design.md) explains the planned transaction path and retained clone reference.
 

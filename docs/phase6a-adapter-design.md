@@ -71,5 +71,5 @@ The terminal displays the current best bid/ask and observed live trades, and
 can submit and cancel simulated orders. It does not show invented level-2 depth,
 historical candles, account balances, authoritative risk snapshots, simulation
 controls or live exchange metrics. Those backend capabilities remain absent.
-The chart panel is a labelled placeholder; `lightweight-charts` is pinned for
-future use and its attribution requirements apply when it is used.
+The Phase 6B terminal plots only session-observed trades using
+`lightweight-charts`, with attribution; no historical candles are implied.

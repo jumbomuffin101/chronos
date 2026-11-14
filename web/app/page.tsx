@@ -24,10 +24,17 @@ export default function Home() {
     selected = useRef(1);
   useEffect(() => {
     let disposed = false;
+    let opened = false;
     const ws = new WebSocket(
       process.env.NEXT_PUBLIC_ADAPTER_URL ?? "ws://127.0.0.1:8090/ws",
     );
     socket.current = ws;
+    ws.onopen = () => {
+      if (!disposed) {
+        opened = true;
+        dispatch({ type: "browser.open" });
+      }
+    };
     ws.onmessage = (event) => {
       if (disposed) return;
       const m = JSON.parse(event.data) as ServerMessage;
@@ -49,7 +56,7 @@ export default function Home() {
         });
     };
     ws.onclose = () => {
-      if (!disposed) dispatch({ type: "disconnect" });
+      if (!disposed) dispatch({ type: "disconnect", unavailable: !opened });
     };
     return () => {
       disposed = true;
@@ -141,9 +148,14 @@ export default function Home() {
             CHRONOS <small>EXCHANGE TERMINAL</small>
           </span>
         </div>
-        <div className="top-meta">
+        <div className="top-meta" role="status" aria-live="polite">
           <span className="symbol-chip">SYMBOL {state.symbol}</span>
           <span className="environment">● LOCAL SIMULATION</span>
+          <span
+            className={state.browserStatus === "connected" ? "live" : "warn"}
+          >
+            ● BROWSER {state.browserStatus.toUpperCase()}
+          </span>
           <span
             className={
               state.privateStatus === "connected" &&
@@ -164,12 +176,27 @@ export default function Home() {
           <span className={state.feed === "live" ? "live" : "warn"}>
             ● FEED {state.feed.toUpperCase()}
           </span>
+          {state.sessionUncertain &&
+            state.privateStatus === "connected" &&
+            state.publicStatus === "connected" && (
+              <span className="warn">● NEW SESSION · NO RECOVERY</span>
+            )}
           {(state.privateStatus === "disconnected" ||
             state.publicStatus === "disconnected") && (
             <button
               className="link-button"
               onClick={() => {
+                const old = socket.current;
+                if (old) {
+                  old.onopen = null;
+                  old.onmessage = null;
+                  old.onerror = null;
+                  old.onclose = null;
+                  old.close();
+                  socket.current = null;
+                }
                 dispatch({ type: "disconnect" });
+                dispatch({ type: "new-session" });
                 setGeneration((x) => x + 1);
               }}
             >
@@ -179,6 +206,12 @@ export default function Home() {
         </div>
       </header>
       <div className="workspace">
+        {state.sessionUncertain && (
+          <div className="session-warning" role="status">
+            Previous session outcomes may be uncertain; resting orders may
+            remain. A new session cannot recover them.
+          </div>
+        )}
         <div className="workspace-title">
           <div>
             <div className="eyebrow">
@@ -343,7 +376,15 @@ export default function Home() {
                 </div>
                 <span className="tag">PRIVATE SESSION</span>
               </div>
-              <div className="scroll-table">
+              <p className="scroll-hint">
+                Scroll horizontally to see all order details.
+              </p>
+              <div
+                className="scroll-table"
+                tabIndex={0}
+                role="region"
+                aria-label="Session orders, scroll horizontally for details"
+              >
                 <table>
                   <thead>
                     <tr>

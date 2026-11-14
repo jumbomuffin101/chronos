@@ -23,6 +23,27 @@ they are not end-to-end network or production hardware measurements.
 
 ## Phase 6A web development
 
+### One-command local startup and browser tests
+
+After building the Debug gateway and running `npm ci` in the selected web
+directory, run `node scripts/chronos-dev.mjs` from the repository root. The
+launcher checks dependencies and loopback ports, waits for each service, and
+stops only the child process groups it owns on Ctrl+C. It does not install
+dependencies or kill existing services. Override `CHRONOS_GATEWAY_PORT`,
+`CHRONOS_ADAPTER_PORT`, and `CHRONOS_WEB_PORT` with distinct available ports;
+`CHRONOS_GATEWAY` can select a different built gateway executable. A WSL-native
+web copy can be selected with `CHRONOS_WEB_DIR=/absolute/path/to/web`. The
+default ports are 8088, 8090, and 3000.
+
+For browser tests run `npx playwright install chromium` once in the selected
+web directory, then `npm run test:e2e`. If the web source is a native-filesystem
+copy rather than `<repository>/web`, set `CHRONOS_PROJECT_ROOT` to the actual
+repository root. Set `CHRONOS_SCREENSHOTS` to an absolute output directory to
+write four populated screenshots. Tests start their own gateway, adapter and
+dashboard on selected loopback ports and perform a real two-session trade;
+do not run them against a valuable or public exchange. The tests include an
+axe WCAG 2 A/AA scan; manual accessibility review remains necessary.
+
 Use Node.js 22.22.2 (`web/.nvmrc`) and the checked-in lockfile. In `web/`, run
 `npm ci`, `npm run typecheck`, `npm run lint`, `npm run format:check`,
 `npm test`, and `npm run build`. The integration test starts the real Debug

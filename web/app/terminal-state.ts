@@ -26,6 +26,8 @@ export type Order = {
   beforeCancel?: string;
 };
 export type State = {
+  browserStatus: "connecting" | "connected" | "unavailable" | "disconnected";
+  sessionUncertain: boolean;
   privateStatus: string;
   publicStatus: string;
   feed: string;
@@ -38,6 +40,8 @@ export type State = {
   notice: string;
 };
 export const initialState: State = {
+  browserStatus: "connecting",
+  sessionUncertain: false,
   privateStatus: "connecting",
   publicStatus: "connecting",
   feed: "waiting",
@@ -97,13 +101,27 @@ export function validateOrder(
   return null;
 }
 export type Action =
+  | { type: "browser.open" }
+  | { type: "new-session" }
   | { type: "message"; message: ServerMessage; at: number }
   | { type: "select"; symbol: number }
   | { type: "submit"; order: Order }
   | { type: "cancel"; id: string; browserId: string }
-  | { type: "disconnect" }
+  | { type: "disconnect"; unavailable?: boolean }
   | { type: "notice"; text: string };
 export function reducer(s: State, a: Action): State {
+  if (a.type === "browser.open") return { ...s, browserStatus: "connected" };
+  if (a.type === "new-session")
+    return {
+      ...s,
+      browserStatus: "connecting",
+      privateStatus: "connecting",
+      publicStatus: "connecting",
+      feed: "waiting",
+      market: null,
+      sequence: null,
+      trades: [],
+    };
   if (a.type === "notice") return { ...s, notice: a.text };
   if (a.type === "select")
     return {
@@ -137,6 +155,8 @@ export function reducer(s: State, a: Action): State {
   if (a.type === "disconnect")
     return {
       ...s,
+      browserStatus: a.unavailable ? "unavailable" : "disconnected",
+      sessionUncertain: s.sessionUncertain || !a.unavailable,
       privateStatus: "disconnected",
       publicStatus: "disconnected",
       feed: "disconnected",
@@ -154,8 +174,9 @@ export function reducer(s: State, a: Action): State {
           ? { ...o, status: "uncertain" }
           : o,
       ),
-      notice:
-        "Disconnected. Pending outcomes are uncertain and resting orders may remain; this session cannot be recovered.",
+      notice: a.unavailable
+        ? "Adapter unavailable. Start the gateway and adapter, then start a new session."
+        : "Browser disconnected. Pending outcomes are uncertain and resting orders may remain; this session cannot be recovered.",
     };
   const m = a.message;
   if (m.type === "connection.status") {
@@ -164,6 +185,7 @@ export function reducer(s: State, a: Action): State {
         ? {
             ...s,
             privateStatus: m.state,
+            sessionUncertain: true,
             orders: s.orders.map((o) =>
               [
                 "pending",
@@ -189,7 +211,7 @@ export function reducer(s: State, a: Action): State {
       : { ...s, publicStatus: m.state };
   }
   if (m.type === "market.status" || m.type === "market.gap")
-    return m.symbol !== s.symbol
+    return m.symbol !== s.symbol || s.publicStatus === "disconnected"
       ? s
       : {
           ...s,
@@ -203,7 +225,7 @@ export function reducer(s: State, a: Action): State {
     m.type === "market.book" ||
     m.type === "market.trade"
   ) {
-    if (m.symbol !== s.symbol) return s;
+    if (m.symbol !== s.symbol || s.publicStatus === "disconnected") return s;
     if (
       m.type !== "market.snapshot" &&
       (s.feed !== "live" ||
@@ -320,6 +342,7 @@ export function reducer(s: State, a: Action): State {
     };
   }
   if (m.type === "connection.error") return { ...s, notice: m.message };
-  if (m.type === "session.uncertain") return { ...s, notice: m.reason };
+  if (m.type === "session.uncertain")
+    return { ...s, sessionUncertain: true, notice: m.reason };
   return s;
 }

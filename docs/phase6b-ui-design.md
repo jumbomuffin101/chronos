@@ -26,6 +26,10 @@ uses the browser's local time. Trade history is bounded at 200, reports at 100,
 and session orders at 1024. Order submissions are never retried automatically.
 On connection loss, active orders are marked uncertain; a user can explicitly
 start a new session, which cannot recover the old one.
+Phase 6C exposes browser, exchange and feed connection status separately and
+retains a visible prior-session uncertainty warning across a new session. A
+disconnected feed cannot be revived by a delayed snapshot. The order table is
+keyboard-focusable and announces horizontal scrolling on narrow screens.
 
 Full depth, historical candles, account balance and position queries, P&L,
 simulation controls and live system metrics are not supplied by the current
