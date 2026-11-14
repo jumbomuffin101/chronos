@@ -10,7 +10,8 @@ The planned system separates a deterministic matching core and limit order book 
 2. **Complete:** in-memory resting limit order book.
 3. **Complete:** deterministic matching and in-memory execution reports.
 4. **Complete:** benchmark baseline and initial transaction optimization; further profiling remains planned.
-5. **Current:** loopback order routing, basic in-memory account risk and public market data; durable recovery and production identity remain planned.
+5. **Complete:** loopback order routing, basic in-memory account risk and public market data; durable recovery and production identity remain planned.
+6. **Foundation:** local Next.js terminal and Node adapter using separate private and public protocol-v3 sessions; see [Phase 6A design](docs/phase6a-adapter-design.md) and [implementation report](docs/phase6a-implementation-report.md).
 
 The stack is C++20, CMake 3.20+, GoogleTest, optional Google Benchmark, and GitHub Actions. Linux with GCC or Clang is the target; Windows development uses WSL2 Ubuntu. See the [matching design](docs/phase3-matching-design.md) for API and limitations.
 
@@ -29,6 +30,18 @@ On Linux/WSL, run `./build/debug/chronos_gateway 8088` in one terminal and `./bu
 
 For an optimized build use `cmake --preset release` and `cmake --build --preset release`. For AddressSanitizer and UndefinedBehaviorSanitizer use `cmake --preset sanitizers`, `cmake --build --preset sanitizers`, and `ctest --preset sanitizers` on a supported Linux GCC/Clang toolchain. See [development](docs/development.md) for formatting and dependency details.
 
+### Local dashboard
+
+With Node.js 22.22.2 and the Debug gateway built, start these in separate Linux/WSL terminals:
+
+```sh
+./build/debug/chronos_gateway 8088
+cd web && npm ci && npm run adapter
+cd web && npm run dev
+```
+
+Open `http://127.0.0.1:3000`. The adapter listens on `127.0.0.1:8090` and checks the exact browser origin; the browser never connects directly to the exchange TCP protocol. This is an unauthenticated local simulation, not a production service. Outstanding orders and reports cannot be recovered after disconnect. The feed provides best bid/ask and observed trades, not full depth or historical charts. See [development](docs/development.md) for WSL filesystem guidance and checks.
+
 Optional performance benchmarks and their limitations are described in the [benchmark methodology](docs/phase4-benchmark-methodology.md); the measured WSL2 baseline is in the [report](docs/phase4-benchmark-report.md). The [Phase 4B design](docs/phase4-optimization-design.md) explains the planned transaction path and retained clone reference.
 
 ## Repository structure
@@ -40,6 +53,7 @@ include/chronos/orderbook/ and src/orderbook/  Resting order book
 include/chronos/matching/ and src/matching/    Matching engine
 tests/core/           GoogleTest tests
 benchmarks/           Future benchmark guidance
+web/                  Local Node adapter and Next.js terminal
 docs/                 Architecture, development, and decisions
 scripts/              Developer utilities
 .github/workflows/    CI

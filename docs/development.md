@@ -20,3 +20,38 @@ For the optional Phase 5C exchange benchmark, configure Release with
 `chronos_phase5c_baseline`, and run `./build/release/chronos_phase5c_baseline`.
 Its samples exclude fixture construction and compare zero with four subscribers;
 they are not end-to-end network or production hardware measurements.
+
+## Phase 6A web development
+
+Use Node.js 22.22.2 (`web/.nvmrc`) and the checked-in lockfile. In `web/`, run
+`npm ci`, `npm run typecheck`, `npm run lint`, `npm run format:check`,
+`npm test`, and `npm run build`. The integration test starts the real Debug
+gateway at `../build/debug/chronos_gateway`; set `CHRONOS_TEST_GATEWAY` to an
+absolute gateway executable when the web directory is elsewhere. Tests bind
+ephemeral loopback ports and terminate their own processes. Start the gateway,
+adapter and dashboard using the three commands in the [README](../README.md).
+The default exact allowed Origin is `http://127.0.0.1:3000`; use the same host
+in the browser. `CHRONOS_WEB_ORIGIN`, `CHRONOS_GATEWAY_PORT`, and
+`CHRONOS_ADAPTER_PORT` configure the adapter, while
+`NEXT_PUBLIC_ADAPTER_URL` is a Next.js build-time browser setting.
+
+Installing npm dependencies on the Windows-mounted WSL filesystem stalled in
+this environment. If this occurs, keep the original repository and Git history
+untouched, copy the `web` source to a WSL-native directory, and run `npm ci`
+there. For example, from the repository root:
+
+```sh
+mkdir -p ~/chronos-phase6a-web
+cp -r web/. ~/chronos-phase6a-web/
+cd ~/chronos-phase6a-web
+npm ci
+CHRONOS_TEST_GATEWAY='/absolute/path/to/chronos/build/debug/chronos_gateway' npm test
+npm run adapter # in a separate terminal from npm run dev
+```
+
+Sync source changes deliberately between the copy and the original checkout;
+do not copy `node_modules` or `.next` into Git. The local `web/.gitignore`
+excludes both, generated TypeScript build information, and Next's generated
+environment declaration. WSL2 localhost forwarding and filesystem performance
+depend on the host configuration. The web adapter is local-only and its origin
+check is not authentication.
