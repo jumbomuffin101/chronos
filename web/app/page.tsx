@@ -1,56 +1,27 @@
 "use client";
-
-import { useEffect, useRef, useState } from "react";
-
-type Event = Record<string, string | number | boolean>;
-const panel = "rounded-xl border border-[#27313b] bg-[#10161d]";
-const label = "text-[10px] uppercase tracking-[0.16em] text-[#82929e]";
-const reportNames = [
-  "accepted",
-  "partial fill",
-  "filled",
-  "resting",
-  "cancelled",
-  "market remainder cancelled",
-];
-const rejectionNames: Record<number, string> = {
-  1: "unknown session",
-  2: "duplicate request",
-  3: "duplicate order",
-  4: "not owner",
-  5: "not found",
-  6: "invalid order",
-  7: "capacity",
-  8: "counter exhausted",
-  9: "kill switch",
-  10: "symbol denied",
-  11: "quantity limit",
-  12: "notional limit",
-  13: "open-order limit",
-  14: "position limit",
-  15: "market price bound",
-  16: "arithmetic overflow",
-};
+import { useEffect, useReducer, useRef, useState } from "react";
+import type { ServerMessage } from "../adapter/messages";
+import PriceChart from "./price-chart";
+import {
+  format,
+  initialState,
+  reducer,
+  spread,
+  validateOrder,
+} from "./terminal-state";
 
 export default function Home() {
-  const socket = useRef<WebSocket | null>(null);
-  const orderId = useRef(0n);
-  const selectedSymbol = useRef(1);
-  const [privateStatus, setPrivateStatus] = useState("connecting");
-  const [publicStatus, setPublicStatus] = useState("connecting");
-  const [symbol, setSymbol] = useState("1");
-  const [feed, setFeed] = useState("waiting for snapshot");
-  const [quote, setQuote] = useState<Event | null>(null);
-  const [trades, setTrades] = useState<Event[]>([]);
-  const [reports, setReports] = useState<Event[]>([]);
-  const [side, setSide] = useState("buy");
-  const [kind, setKind] = useState("limit");
-  const [price, setPrice] = useState("");
-  const [quantity, setQuantity] = useState("");
-  const [cancelId, setCancelId] = useState("");
-  const [notice, setNotice] = useState(
-    "Sessions are local and cannot be recovered after disconnect.",
-  );
+  const [state, dispatch] = useReducer(reducer, initialState);
+  const [side, setSide] = useState<"buy" | "sell">("buy"),
+    [kind, setKind] = useState<"limit" | "market">("limit"),
+    [price, setPrice] = useState(""),
+    [quantity, setQuantity] = useState(""),
+    [symbolInput, setSymbolInput] = useState("1"),
+    [generation, setGeneration] = useState(0);
+  const socket = useRef<WebSocket | null>(null),
+    nextOrder = useRef(0n),
+    nextCommand = useRef(0n),
+    selected = useRef(1);
   useEffect(() => {
     let disposed = false;
     const ws = new WebSocket(
@@ -59,395 +30,474 @@ export default function Home() {
     socket.current = ws;
     ws.onmessage = (event) => {
       if (disposed) return;
-      const msg = JSON.parse(event.data) as Event;
-      if (msg.type === "connection.status") {
-        if (msg.flow === "private") setPrivateStatus(String(msg.state));
-        if (msg.flow === "public") {
-          setPublicStatus(String(msg.state));
-          if (msg.state === "connected")
-            ws.send(JSON.stringify({ type: "subscribe", symbol: 1 }));
-          else {
-            setFeed("disconnected");
-            setQuote(null);
-            setTrades([]);
-          }
-        }
-      } else if (
-        msg.type === "market.snapshot" &&
-        msg.symbol === selectedSymbol.current
-      ) {
-        setQuote(msg);
-        setFeed("live");
-      } else if (
-        msg.type === "market.book" &&
-        msg.symbol === selectedSymbol.current
+      const m = JSON.parse(event.data) as ServerMessage;
+      dispatch({ type: "message", message: m, at: Date.now() });
+      if (
+        m.type === "connection.status" &&
+        m.flow === "public" &&
+        m.state === "connected"
       )
-        setQuote(msg);
-      else if (
-        msg.type === "market.trade" &&
-        msg.symbol === selectedSymbol.current
-      )
-        setTrades((previous) => [msg, ...previous].slice(0, 20));
-      else if (msg.type === "market.gap" || msg.type === "market.status") {
-        if (msg.symbol === selectedSymbol.current) {
-          setFeed(
-            msg.type === "market.gap"
-              ? "gap — resynchronizing"
-              : String(msg.state),
-          );
-          setQuote(null);
-          if (msg.type === "market.gap") setTrades([]);
-        }
-      } else if (
-        msg.type === "order.report" ||
-        msg.type === "order.rejected" ||
-        msg.type === "order.unknown"
-      ) {
-        setReports((previous) => [msg, ...previous].slice(0, 20));
-      } else if (
-        msg.type === "command.error" ||
-        msg.type === "connection.error" ||
-        msg.type === "protocol.error" ||
-        msg.type === "session.uncertain"
-      )
-        setNotice(
-          String(msg.message ?? msg.reason ?? `Protocol error ${msg.code}`),
+        ws.send(
+          JSON.stringify({ type: "subscribe", symbol: selected.current }),
         );
     };
-    ws.onerror = () =>
-      !disposed &&
-      setNotice(
-        "Adapter unavailable. Start the gateway and adapter to connect.",
-      );
+    ws.onerror = () => {
+      if (!disposed)
+        dispatch({
+          type: "notice",
+          text: "Adapter unavailable. Start the gateway and adapter.",
+        });
+    };
     ws.onclose = () => {
-      if (disposed) return;
-      setPrivateStatus("disconnected");
-      setPublicStatus("disconnected");
-      setFeed("disconnected");
-      setQuote(null);
-      setNotice(
-        "Disconnected. Order outcomes may be unknown and resting orders may remain; this session cannot be recovered.",
-      );
+      if (!disposed) dispatch({ type: "disconnect" });
     };
     return () => {
       disposed = true;
       if (socket.current === ws) socket.current = null;
       ws.close();
     };
-  }, []);
-  function send(value: object): boolean {
+  }, [generation]);
+  function send(value: object) {
     if (socket.current?.readyState !== WebSocket.OPEN) {
-      setNotice("Adapter is disconnected.");
+      dispatch({
+        type: "notice",
+        text: "Adapter disconnected. No command was sent.",
+      });
       return false;
     }
     socket.current.send(JSON.stringify(value));
     return true;
   }
-  function chooseSymbol(value: string) {
-    const next = Number(value);
-    if (!Number.isInteger(next) || next < 0 || next > 0xffffffff) {
-      setNotice("Enter a valid 32-bit symbol.");
+  function selectSymbol(e: React.FormEvent) {
+    e.preventDefault();
+    const n = Number(symbolInput);
+    if (
+      !/^\d+$/.test(symbolInput) ||
+      !Number.isInteger(n) ||
+      n < 0 ||
+      n > 0xffffffff
+    ) {
+      dispatch({ type: "notice", text: "Enter a valid uint32 symbol." });
       return;
     }
-    send({ type: "unsubscribe", symbol: Number(symbol) });
-    selectedSymbol.current = next;
-    setSymbol(value);
-    setQuote(null);
-    setTrades([]);
-    setFeed("waiting for snapshot");
-    send({ type: "subscribe", symbol: next });
+    if (n === state.symbol) return;
+    send({ type: "unsubscribe", symbol: state.symbol });
+    selected.current = n;
+    dispatch({ type: "select", symbol: n });
+    send({ type: "subscribe", symbol: n });
   }
-  function placeOrder(event: React.FormEvent) {
-    event.preventDefault();
-    const id = (++orderId.current).toString();
+  function submit(e: React.FormEvent) {
+    e.preventDefault();
+    const error = validateOrder(quantity, price, kind);
+    if (error) {
+      dispatch({ type: "notice", text: error });
+      return;
+    }
+    const id = (++nextOrder.current).toString(),
+      browserId = `order_${++nextCommand.current}`;
     if (
       send({
         type: "order.submit",
-        browserId: `order_${id}`,
+        browserId,
         clientOrderId: id,
-        symbol: Number(symbol),
+        symbol: state.symbol,
         side,
         orderType: kind,
         price: kind === "market" ? "0" : price,
         quantity,
       })
-    )
-      setNotice(
-        `Submitted simulated order ${id}; acceptance is determined by the exchange.`,
-      );
+    ) {
+      dispatch({
+        type: "submit",
+        order: {
+          id,
+          browserId,
+          symbol: state.symbol,
+          side,
+          orderType: kind,
+          price: kind === "market" ? "0" : price,
+          quantity,
+          remaining: quantity,
+          status: "pending",
+        },
+      });
+    }
   }
-  const value = (key: string) =>
-    quote && feed === "live" ? String(quote[key] ?? "—") : "—";
+  function cancel(id: string) {
+    const browserId = `cancel_${++nextCommand.current}`;
+    if (send({ type: "order.cancel", browserId, clientOrderId: id }))
+      dispatch({ type: "cancel", id, browserId });
+  }
+  const market = state.feed === "live" ? state.market : null;
+  const bid = market && BigInt(market.bidQuantity) > 0n ? market.bid : null,
+    ask = market && BigInt(market.askQuantity) > 0n ? market.ask : null;
+  const last = state.trades[0];
   return (
-    <main className="min-h-screen">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#26313a] px-6 py-4">
-        <div className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center rounded-lg bg-[#a0ead7] text-lg font-bold text-[#0a211c]">
-            C
+    <main className="terminal">
+      <header className="topbar">
+        <div className="brand">
+          <span className="mark">C</span>
+          <span>
+            CHRONOS <small>EXCHANGE TERMINAL</small>
           </span>
-          <div>
-            <div className="font-bold tracking-[0.18em]">CHRONOS</div>
-            <div className="text-[10px] uppercase tracking-widest text-[#8ca19f]">
-              Exchange simulator
-            </div>
-          </div>
         </div>
-        <div className="flex items-center gap-3 text-xs">
-          <span className="rounded-full border border-[#3a4a4b] px-3 py-1 text-[#b2c9c4]">
-            LOCAL SIMULATION
-          </span>
+        <div className="top-meta">
+          <span className="symbol-chip">SYMBOL {state.symbol}</span>
+          <span className="environment">● LOCAL SIMULATION</span>
           <span
             className={
-              privateStatus === "connected" && publicStatus === "connected"
-                ? "text-[#83ddbc]"
-                : "text-[#e4b771]"
+              state.privateStatus === "connected" &&
+              state.publicStatus === "connected"
+                ? "live"
+                : "warn"
             }
           >
-            ● Exchange{" "}
-            {privateStatus === "connected" && publicStatus === "connected"
-              ? "connected"
-              : "disconnected"}
+            ●{" "}
+            {state.privateStatus === "connected" &&
+            state.publicStatus === "connected"
+              ? "EXCHANGE CONNECTED"
+              : state.privateStatus === "connecting" ||
+                  state.publicStatus === "connecting"
+                ? "EXCHANGE CONNECTING"
+                : "EXCHANGE DISCONNECTED"}
           </span>
+          <span className={state.feed === "live" ? "live" : "warn"}>
+            ● FEED {state.feed.toUpperCase()}
+          </span>
+          {(state.privateStatus === "disconnected" ||
+            state.publicStatus === "disconnected") && (
+            <button
+              className="link-button"
+              onClick={() => {
+                dispatch({ type: "disconnect" });
+                setGeneration((x) => x + 1);
+              }}
+            >
+              New session
+            </button>
+          )}
         </div>
       </header>
-      <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-8">
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div className="workspace">
+        <div className="workspace-title">
           <div>
-            <p className={label}>Workspace / Terminal</p>
-            <h1 className="mt-2 text-2xl font-semibold">Market overview</h1>
-            <p className="mt-1 text-sm text-[#82929e]">
-              Live session data from the local C++ exchange.
-            </p>
+            <div className="eyebrow">
+              WORKSPACE <span>/</span> TRADING
+            </div>
+            <h1>Trading terminal</h1>
+            <p>Exchange activity · observed in this browser session</p>
           </div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              chooseSymbol(
-                new FormData(e.currentTarget).get("symbol") as string,
-              );
-            }}
-            className="flex items-end gap-2"
-          >
-            <label className="text-xs text-[#9aabb4]">
-              Symbol ID
-              <input
-                name="symbol"
-                defaultValue="1"
-                inputMode="numeric"
-                className="mt-1 block w-32 rounded border border-[#34434d] bg-[#0a1015] px-3 py-2 text-white"
-              />
-            </label>
-            <button className="rounded border border-[#3a4d51] px-3 py-2 text-xs hover:bg-[#1c2a2b]">
-              View
-            </button>
+          <form onSubmit={selectSymbol} className="symbol-form">
+            <label htmlFor="symbol">SYMBOL ID</label>
+            <input
+              id="symbol"
+              value={symbolInput}
+              onChange={(e) => setSymbolInput(e.target.value)}
+              inputMode="numeric"
+            />
+            <button>Load</button>
           </form>
         </div>
-        <div className="mb-4 flex flex-wrap gap-3 text-xs text-[#91a3aa]">
-          <span>
-            Symbol <b className="text-white">{symbol}</b>
-          </span>
-          <span>·</span>
-          <span>
-            Feed{" "}
-            <b
-              className={feed === "live" ? "text-[#83ddbc]" : "text-[#e4b771]"}
-            >
-              {feed}
-            </b>
-          </span>
-          <span>·</span>
-          <span>Top of book only</span>
-        </div>
-        <div className="grid gap-4 lg:grid-cols-[1fr_310px]">
-          <div className="grid gap-4">
-            <section className={`${panel} p-5`}>
-              <div className="mb-5 flex justify-between">
+        <section className="overview" aria-label="Market overview">
+          <div>
+            <label>BEST BID</label>
+            <strong className="buy">{format(bid)}</strong>
+            <small>
+              {bid ? format(market?.bidQuantity) + " units" : "No bid"}
+            </small>
+          </div>
+          <div>
+            <label>BEST ASK</label>
+            <strong className="sell">{format(ask)}</strong>
+            <small>
+              {ask ? format(market?.askQuantity) + " units" : "No ask"}
+            </small>
+          </div>
+          <div>
+            <label>SPREAD</label>
+            <strong>{format(spread(market))}</strong>
+            <small>ticks</small>
+          </div>
+          <div>
+            <label>LAST TRADE</label>
+            <strong>{format(last?.price)}</strong>
+            <small>
+              {last ? format(last.quantity) + " units" : "Not observed"}
+            </small>
+          </div>
+          <div>
+            <label>FEED SEQUENCE</label>
+            <strong>{format(state.sequence)}</strong>
+            <small>{state.feed}</small>
+          </div>
+        </section>
+        <div className="grid">
+          <div className="main-column">
+            <section className="panel chart-panel">
+              <div className="panel-head">
                 <div>
-                  <p className={label}>Market data</p>
-                  <h2 className="mt-1 font-semibold">Best bid & ask</h2>
+                  <h2>Price & volume</h2>
+                  <p>Symbol {state.symbol} · observed session trades</p>
                 </div>
-                <span className="text-xs text-[#7c919a]">
-                  Sequence {value("sequence")}
-                </span>
+                <span className="tag">SESSION ONLY</span>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="rounded-lg bg-[#14231f] p-4">
-                  <p className={label}>Best bid</p>
-                  <p className="mt-2 font-mono text-2xl text-[#8ee0bc]">
-                    {value("bid")}
+              {state.trades.length ? (
+                <>
+                  <PriceChart trades={state.trades} />
+                  <p className="chart-note">
+                    Observed time in UTC · volume per second · values beyond
+                    chart precision omitted
                   </p>
-                  <p className="mt-1 text-xs text-[#8da9a0]">
-                    Quantity {value("bidQuantity")}
-                  </p>
-                </div>
-                <div className="rounded-lg bg-[#291b20] p-4">
-                  <p className={label}>Best ask</p>
-                  <p className="mt-2 font-mono text-2xl text-[#eca7aa]">
-                    {value("ask")}
-                  </p>
-                  <p className="mt-1 text-xs text-[#bba0a3]">
-                    Quantity {value("askQuantity")}
-                  </p>
-                </div>
-              </div>
-              <p className="mt-4 text-xs text-[#80919b]">
-                {feed === "live"
-                  ? "Zero indicates an empty side. Full depth is not available."
-                  : "Waiting for a consistent exchange snapshot."}
-              </p>
-            </section>
-            <section className={`${panel} min-h-56 p-5`}>
-              <p className={label}>Price & volume</p>
-              <h2 className="mt-1 font-semibold">Chart workspace</h2>
-              <div className="grid min-h-36 place-items-center text-center text-sm text-[#758793]">
-                Historical candles and volume are not available yet.
-              </div>
-            </section>
-            <section className={`${panel} p-5`}>
-              <p className={label}>Public feed</p>
-              <h2 className="mt-1 font-semibold">Recent trades</h2>
-              {trades.length === 0 ? (
-                <p className="py-8 text-center text-sm text-[#758793]">
-                  No trades observed in this session.
-                </p>
+                </>
               ) : (
-                <ul className="mt-4 space-y-2 font-mono text-sm">
-                  {trades.map((trade, i) => (
-                    <li
-                      key={i}
-                      className="flex justify-between border-t border-[#25313a] pt-2"
-                    >
-                      <span>{String(trade.tradePrice)} ticks</span>
-                      <span>{String(trade.tradeQuantity)} units</span>
-                    </li>
+                <div className="chart-empty">
+                  <div className="chart-icon">⌁</div>
+                  <b>Waiting for the first trade</b>
+                  <span>
+                    The chart displays trades observed in this session.
+                    Historical data is unavailable.
+                  </span>
+                </div>
+              )}
+              <div className="attribution">
+                Charts by{" "}
+                <a
+                  href="https://www.tradingview.com/"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  TradingView
+                </a>
+              </div>
+            </section>
+            <div className="market-grid">
+              <section className="panel">
+                <div className="panel-head">
+                  <div>
+                    <h2>Order book</h2>
+                    <p>Authoritative best prices only</p>
+                  </div>
+                  <span className={state.feed === "live" ? "live" : "warn"}>
+                    ● {state.feed}
+                  </span>
+                </div>
+                <div className="book-head">
+                  <span>SIDE</span>
+                  <span>PRICE (TICKS)</span>
+                  <span>QUANTITY</span>
+                </div>
+                <div className="book-row">
+                  <span className="sell">ASK</span>
+                  <b className="sell">{format(ask)}</b>
+                  <span>{ask ? format(market?.askQuantity) : "—"}</span>
+                </div>
+                <div className="book-spread">
+                  Spread <b>{format(spread(market))}</b> ticks
+                </div>
+                <div className="book-row">
+                  <span className="buy">BID</span>
+                  <b className="buy">{format(bid)}</b>
+                  <span>{bid ? format(market?.bidQuantity) : "—"}</span>
+                </div>
+                <p className="panel-foot">
+                  Full market depth is not available from the exchange.
+                </p>
+              </section>
+              <section className="panel">
+                <div className="panel-head">
+                  <div>
+                    <h2>Recent trades</h2>
+                    <p>Public feed · observed locally</p>
+                  </div>
+                  <span className="tag">{state.trades.length} OBSERVED</span>
+                </div>
+                <div className="trade-table">
+                  <div className="trade-row headings">
+                    <span>TIME</span>
+                    <span>PRICE</span>
+                    <span>QTY</span>
+                    <span>SEQ</span>
+                  </div>
+                  {state.trades.length ? (
+                    state.trades.slice(0, 30).map((t) => (
+                      <div className="trade-row" key={t.sequence}>
+                        <span>{new Date(t.time).toLocaleTimeString()}</span>
+                        <span>{format(t.price)}</span>
+                        <span>{format(t.quantity)}</span>
+                        <span>{format(t.sequence)}</span>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="table-empty">
+                      No trades observed for symbol {state.symbol}.
+                    </div>
+                  )}
+                </div>
+              </section>
+            </div>
+            <section className="panel orders-panel">
+              <div className="panel-head">
+                <div>
+                  <h2>My orders & executions</h2>
+                  <p>Session-observed only · not recoverable account history</p>
+                </div>
+                <span className="tag">PRIVATE SESSION</span>
+              </div>
+              <div className="scroll-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>ORDER</th>
+                      <th>SYMBOL</th>
+                      <th>SIDE</th>
+                      <th>TYPE</th>
+                      <th>PRICE</th>
+                      <th>QTY</th>
+                      <th>REMAINING</th>
+                      <th>STATUS</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {state.orders.map((o) => (
+                      <tr key={o.id}>
+                        <td>#{o.id}</td>
+                        <td>{o.symbol}</td>
+                        <td className={o.side}>{o.side.toUpperCase()}</td>
+                        <td>{o.orderType}</td>
+                        <td>
+                          {o.orderType === "market" ? "MKT" : format(o.price)}
+                        </td>
+                        <td>{format(o.quantity)}</td>
+                        <td>{format(o.remaining)}</td>
+                        <td title={o.reason}>
+                          {o.status}
+                          {o.reason ? `: ${o.reason}` : ""}
+                        </td>
+                        <td>
+                          {["accepted", "resting", "partial fill"].includes(
+                            o.status,
+                          ) && (
+                            <button
+                              className="link-button"
+                              disabled={state.privateStatus !== "connected"}
+                              onClick={() => cancel(o.id)}
+                            >
+                              Cancel
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {!state.orders.length && (
+                  <div className="table-empty">
+                    No orders submitted in this session.
+                  </div>
+                )}
+              </div>
+              {state.reports.length > 0 && (
+                <div className="reports">
+                  <b>EXECUTIONS</b>
+                  {state.reports.slice(0, 5).map((r, i) => (
+                    <span key={i}>{r}</span>
                   ))}
-                </ul>
+                </div>
               )}
             </section>
           </div>
-          <aside className="grid content-start gap-4">
-            <section className={`${panel} p-5`}>
-              <p className={label}>Manual entry</p>
-              <h2 className="mt-1 font-semibold">Simulated order</h2>
-              <form className="mt-5 space-y-4" onSubmit={placeOrder}>
-                <label className="block text-xs text-[#9aabb4]">
-                  Side
-                  <select
-                    value={side}
-                    onChange={(e) => setSide(e.target.value)}
-                    className="mt-1 w-full rounded border border-[#34434d] bg-[#0a1015] px-3 py-2 text-white"
-                  >
-                    <option value="buy">Buy</option>
-                    <option value="sell">Sell</option>
-                  </select>
-                </label>
-                <label className="block text-xs text-[#9aabb4]">
-                  Type
-                  <select
-                    value={kind}
-                    onChange={(e) => setKind(e.target.value)}
-                    className="mt-1 w-full rounded border border-[#34434d] bg-[#0a1015] px-3 py-2 text-white"
-                  >
-                    <option value="limit">Limit</option>
-                    <option value="market">Market</option>
-                  </select>
-                </label>
-                {kind === "limit" && (
-                  <label className="block text-xs text-[#9aabb4]">
-                    Price in ticks
-                    <input
-                      value={price}
-                      onChange={(e) => setPrice(e.target.value)}
-                      inputMode="numeric"
-                      required
-                      pattern="[0-9]+"
-                      className="mt-1 w-full rounded border border-[#34434d] bg-[#0a1015] px-3 py-2 text-white"
-                    />
+          <aside className="panel entry">
+            <div className="panel-head">
+              <div>
+                <h2>Order entry</h2>
+                <p>Simulated execution</p>
+              </div>
+              <span className="tag">SYMBOL {state.symbol}</span>
+            </div>
+            <form onSubmit={submit}>
+              <div className="side-tabs">
+                <button
+                  type="button"
+                  aria-pressed={side === "buy"}
+                  className={side === "buy" ? "active-buy" : ""}
+                  onClick={() => setSide("buy")}
+                >
+                  BUY
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={side === "sell"}
+                  className={side === "sell" ? "active-sell" : ""}
+                  onClick={() => setSide("sell")}
+                >
+                  SELL
+                </button>
+              </div>
+              <label htmlFor="order-type">ORDER TYPE</label>
+              <select
+                id="order-type"
+                value={kind}
+                onChange={(e) => setKind(e.target.value as "limit" | "market")}
+              >
+                <option value="limit">Limit</option>
+                <option value="market">Market</option>
+              </select>
+              {kind === "limit" && (
+                <>
+                  <label htmlFor="price">
+                    LIMIT PRICE <em>ticks</em>
                   </label>
-                )}
-                <label className="block text-xs text-[#9aabb4]">
-                  Quantity
                   <input
-                    value={quantity}
-                    onChange={(e) => setQuantity(e.target.value)}
+                    id="price"
                     inputMode="numeric"
+                    value={price}
+                    onChange={(e) => setPrice(e.target.value)}
+                    placeholder="0"
                     required
-                    pattern="[0-9]+"
-                    className="mt-1 w-full rounded border border-[#34434d] bg-[#0a1015] px-3 py-2 text-white"
                   />
-                </label>
-                <button
-                  disabled={privateStatus !== "connected"}
-                  className="w-full rounded bg-[#99e7cd] px-3 py-3 text-sm font-bold text-[#0a211c] disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  Submit simulated order
-                </button>
-              </form>
-              <p
-                role="status"
-                className="mt-4 text-xs leading-5 text-[#a8b9bc]"
-              >
-                {notice}
-              </p>
-            </section>
-            <section className={`${panel} p-5`}>
-              <p className={label}>Private session</p>
-              <h2 className="mt-1 font-semibold">Execution reports</h2>
-              {reports.length === 0 ? (
-                <p className="py-6 text-center text-sm text-[#758793]">
-                  No reports received.
-                </p>
-              ) : (
-                <ul className="mt-4 space-y-3 text-xs text-[#afbdc4]">
-                  {reports.map((report, i) => (
-                    <li key={i} className="border-t border-[#25313a] pt-2">
-                      {String(report.type)} · order{" "}
-                      {String(report.clientOrderId ?? "—")} ·{" "}
-                      {typeof report.kind === "number"
-                        ? (reportNames[report.kind] ?? "unknown")
-                        : typeof report.code === "number"
-                          ? (rejectionNames[report.code] ??
-                            `code ${report.code}`)
-                          : "unknown"}
-                    </li>
-                  ))}
-                </ul>
+                </>
               )}
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const id = (++orderId.current).toString();
-                  send({
-                    type: "order.cancel",
-                    browserId: `cancel_${id}`,
-                    clientOrderId: cancelId,
-                  });
-                }}
-                className="mt-4 flex gap-2"
+              <label htmlFor="qty">
+                QUANTITY <em>units</em>
+              </label>
+              <input
+                id="qty"
+                inputMode="numeric"
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
+                placeholder="0"
+                required
+              />
+              <button
+                className={
+                  side === "buy" ? "submit buy-button" : "submit sell-button"
+                }
+                disabled={state.privateStatus !== "connected"}
               >
-                <input
-                  aria-label="Client order ID to cancel"
-                  placeholder="Order ID"
-                  value={cancelId}
-                  onChange={(e) => setCancelId(e.target.value)}
-                  pattern="[0-9]+"
-                  required
-                  className="min-w-0 flex-1 rounded border border-[#34434d] bg-[#0a1015] px-2 py-2 text-sm"
-                />
-                <button
-                  disabled={privateStatus !== "connected"}
-                  className="rounded border border-[#46565f] px-3 text-xs disabled:opacity-40"
-                >
-                  Cancel
-                </button>
-              </form>
-              <p className="mt-3 text-xs text-[#758793]">
-                Risk balances and recovery are not available over the current
+                Submit {side} order
+              </button>
+            </form>
+            <p className="order-warning">
+              Orders are simulated. The exchange determines acceptance and risk
+              eligibility.
+            </p>
+            <div className="notice" role="status">
+              {state.notice}
+            </div>
+            <div className="availability">
+              <b>ACCOUNT DATA</b>
+              <p>
+                Positions, balances and P&amp;L are unavailable from the current
                 protocol.
               </p>
-            </section>
+            </div>
           </aside>
         </div>
+        <footer>
+          CHRONOS · LOCAL DEVELOPMENT{" "}
+          <span>Simulated data only · no durable recovery</span>
+        </footer>
       </div>
     </main>
   );

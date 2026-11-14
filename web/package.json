@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "format:check": "prettier --check adapter app package.json tsconfig.json postcss.config.mjs eslint.config.mjs",
-    "test": "node --import tsx --test adapter/*.test.ts"
+    "test": "node --import tsx --test adapter/*.test.ts app/*.test.ts app/*.test.tsx"
   },
   "dependencies": {
     "lightweight-charts": "5.3.0",
