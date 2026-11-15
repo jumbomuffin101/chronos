@@ -2,6 +2,11 @@
 
 On Ubuntu or WSL2 Ubuntu, install `build-essential`, `cmake`, `git`, and `clang-format` (CMake 3.20 or newer). Run the configure, build, and CTest commands in the [README](../README.md). CMake FetchContent fetches GoogleTest v1.14.0 when `BUILD_TESTING` is enabled (the default); the first configure needs network access. To build only the CLI without fetching tests, configure separately with `-DBUILD_TESTING=OFF`. Google Benchmark v1.8.3 is fetched only when `CHRONOS_ENABLE_BENCHMARKS=ON`; see the [benchmark methodology](phase4-benchmark-methodology.md) for its targets. For disconnected builds, CMake's `FETCHCONTENT_SOURCE_DIR_GOOGLETEST` and `FETCHCONTENT_SOURCE_DIR_GOOGLEBENCHMARK` can point to local checkouts of those versions.
 
+`chronos_sim --help` lists Phase 7A simulation options; `--symbol` may be
+repeated. All runs use a fresh isolated exchange and are bounded at 1024
+commands. Optional `chronos_sim_bench` configuration and interpretation are in
+the [Phase 7A report](phase7a-implementation-report.md).
+
 Run `bash scripts/format.sh --check` to verify formatting or `bash scripts/format.sh --fix` to apply it. The sanitizer preset enables ASan and UBSan for project executables on supported Linux GCC/Clang toolchains. Debug and Release use separate build directories.
 
 Identifiers are distinct explicit types. Prices are signed integer ticks, not currency units; instrument-specific tick sizes are not modeled yet. Order construction throws `std::invalid_argument` for zero quantity, invalid side or type, nonpositive limit price, or nonzero market price. The matching engine rejects duplicate active IDs and assigns its own command, event and trade counters. Trade is a passive record; the engine generates executions.

@@ -1,6 +1,7 @@
 #include "chronos/exchange/exchange.hpp"
 #include "chronos/matching/matching_engine.hpp"
 #include "chronos/orderbook/order_book.hpp"
+#include "chronos/simulation/simulation.hpp"
 
 #include <cstdlib>
 #include <gtest/gtest.h>
@@ -24,8 +25,18 @@ void *operator new(std::size_t size) {
     }
     throw std::bad_alloc{};
 }
-void operator delete(void *p) noexcept { std::free(p); }
-void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+void operator delete(void *p) noexcept {
+    std::free(p);
+}
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline))
+#endif
+void operator delete(void *p, std::size_t) noexcept {
+    std::free(p);
+}
 void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
     try {
         return ::operator new(size);
@@ -105,6 +116,43 @@ TEST(OrderBookAllocation, InsertNewLevelRollsBack) { exercise_failures(false, fa
 TEST(OrderBookAllocation, InsertExistingLevelRollsBack) { exercise_failures(false, true); }
 TEST(OrderBookAllocation, MoveToNewLevelRollsBack) { exercise_failures(true, false); }
 TEST(OrderBookAllocation, MoveToExistingLevelRollsBack) { exercise_failures(true, true); }
+
+TEST(SimulationAllocation, FailedStartAndCommandNeverClaimCompletion) {
+    using namespace chronos::simulation;
+    ScenarioConfig config;
+    config.max_commands = 2;
+    SimulationRunner failed_start(config);
+    allocations_until_failure = 0;
+    failed_start.start();
+    allocations_until_failure = -1;
+    EXPECT_EQ(failed_start.result().status.state, Lifecycle::Failed);
+    EXPECT_FALSE(failed_start.result().summary_complete);
+    EXPECT_EQ(failed_start.result().admitted, 0);
+
+    bool observed_failure = false, completed = false;
+    for (int fail_at = 0; fail_at < 128 && !completed; ++fail_at) {
+        SimulationRunner runner(config);
+        runner.start();
+        ASSERT_EQ(runner.result().status.state, Lifecycle::Running);
+        allocations_until_failure = fail_at;
+        runner.run_batch(1);
+        allocations_until_failure = -1;
+        const auto &result = runner.result();
+        EXPECT_FALSE(result.summary_complete);
+        if (result.status.state == Lifecycle::Failed) {
+            observed_failure = true;
+            EXPECT_EQ(result.generated, 1);
+            EXPECT_EQ(result.admitted, 1);
+            EXPECT_LE(result.aggregated_trades, result.trades);
+        } else {
+            EXPECT_EQ(result.status.state, Lifecycle::Running);
+            EXPECT_EQ(result.outcomes.size(), 1);
+            completed = true;
+        }
+    }
+    EXPECT_TRUE(observed_failure);
+    EXPECT_TRUE(completed);
+}
 
 TEST(ExchangeAllocation, StagedFillLeavesLiveStateUntouchedOnAllocationFailure) {
     using chronos::exchange::Exchange;

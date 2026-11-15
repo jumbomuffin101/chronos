@@ -15,6 +15,12 @@ The planned system separates a deterministic matching core and limit order book 
 
 The stack is C++20, CMake 3.20+, GoogleTest, optional Google Benchmark, and GitHub Actions. Linux with GCC or Clang is the target; Windows development uses WSL2 Ubuntu. See the [matching design](docs/phase3-matching-design.md) for API and limitations.
 
+Phase 7A adds an isolated deterministic market simulator. After a Release
+build, try `./build/release/chronos_sim --scenario liquidity-sweep --seed 42 --participants 4 --commands 10`.
+See the [simulation design](docs/phase7a-simulation-design.md) and
+[implementation report](docs/phase7a-implementation-report.md); simulated
+results are not durable event replay or real trading.
+
 ## Build and run
 
 Install a C++20 compiler, CMake 3.20+, Make, Git, and network access to fetch the version-pinned test dependency. From the repository root:
