@@ -1,5 +1,9 @@
 # Phase 7 simulation, replay and recovery design
 
+Phase 7B now implements isolated simulation recording and replay verification.
+See [the implementation report](phase7b-implementation-report.md) for actual
+behavior. Recovery, durability, and network-session replay remain proposals.
+
 This is a proposal, not an implemented guarantee. Chronos remains an in-memory,
 loopback-only simulator. Deterministic replay is distinct from durable storage,
 crash recovery, authenticated sessions, and delivery guarantees. No exactly-once

@@ -46,6 +46,7 @@ struct SimulationRunner::Impl {
     std::vector<std::pair<std::uint64_t, exchange::Report>> reports;
     std::uint64_t h = offset;
     std::size_t seen_trades = 0;
+    SimulationObserver *observer = nullptr;
 };
 
 const char *scenario_name(Scenario s) noexcept {
@@ -97,7 +98,9 @@ std::string SimulationRunner::validate(const ScenarioConfig &c) {
     return {};
 }
 
-SimulationRunner::SimulationRunner(ScenarioConfig c) : impl_(std::make_unique<Impl>()) {
+SimulationRunner::SimulationRunner(ScenarioConfig c, SimulationObserver *observer)
+    : impl_(std::make_unique<Impl>()) {
+    impl_->observer = observer;
     result_.config = std::move(c);
 }
 SimulationRunner::~SimulationRunner() = default;
@@ -192,6 +195,8 @@ void SimulationRunner::start() {
             impl_->participants.push_back({id});
         }
         impl_->generator = std::make_unique<CommandGenerator>(c);
+        if (impl_->observer && !impl_->observer->begin(c))
+            throw std::runtime_error("log header failed before admission");
         auto &h = impl_->h;
         for (const auto v :
              {static_cast<std::uint64_t>(generator_version), static_cast<std::uint64_t>(c.scenario),
@@ -236,6 +241,8 @@ void SimulationRunner::run_batch(std::size_t maximum) {
             const auto cmd = p.generator->next(p.active);
             const bool cancel = cmd.kind == CommandKind::Cancel;
             ++result_.generated;
+            if (p.observer && !p.observer->command(cmd))
+                throw std::runtime_error("command log failed before admission");
             ++result_.admitted;
             const auto outcome =
                 cancel ? p.exchange->cancel(cmd.session, cmd.request, cmd.client_order)
@@ -255,6 +262,9 @@ void SimulationRunner::run_batch(std::size_t maximum) {
                     p.active.push_back({cmd.session, cmd.client_order});
             } else
                 ++result_.rejected_orders;
+            if (p.observer && !p.observer->outcome(cmd, outcome, *p.exchange))
+                throw std::runtime_error("outcome log failed after exchange result; committed "
+                                         "operations were not rolled back");
             for (const auto v :
                  {cmd.step, cmd.session, cmd.request, cmd.client_order,
                   static_cast<std::uint64_t>(cmd.kind), static_cast<std::uint64_t>(cmd.symbol),
@@ -342,6 +352,8 @@ void SimulationRunner::finish(Lifecycle state) {
             hash(p.h, static_cast<std::uint64_t>(*position));
         }
     result_.digest = p.h;
+    if (p.observer && !p.observer->finish(result_, state, *p.exchange))
+        throw std::runtime_error("final log failed; committed operations were not rolled back");
     result_.summary_complete = true;
     result_.status.state = state;
 }

@@ -17,6 +17,11 @@ The stack is C++20, CMake 3.20+, GoogleTest, optional Google Benchmark, and GitH
 
 Phase 7A adds an isolated deterministic market simulator. After a Release
 build, try `./build/release/chronos_sim --scenario liquidity-sweep --seed 42 --participants 4 --commands 10`.
+
+For isolated simulation replay, add `--record session.chronos` (the file must
+not already exist), then run `./build/release/chronos_replay --verify session.chronos`.
+These logs are bounded verification artifacts, not durable recovery journals;
+see [Phase 7B](docs/phase7b-implementation-report.md).
 See the [simulation design](docs/phase7a-simulation-design.md) and
 [implementation report](docs/phase7a-implementation-report.md); simulated
 results are not durable event replay or real trading.

@@ -4,6 +4,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -518,5 +519,138 @@ std::optional<orderbook::OrderSnapshot> Exchange::find(std::uint64_t session,
     if (it == state_->orders.end())
         return std::nullopt;
     return state_->engines.at(it->symbol)->find(core::OrderId{it->internal});
+}
+std::vector<std::uint64_t> Exchange::verification_state() const {
+    std::vector<std::uint64_t> out;
+    const auto add = [&](std::uint64_t v) { out.push_back(v); };
+    // Preserve identity relationships while allowing process-wide IDs to differ
+    // between recording and replay. Duplicate or zero IDs are not normalizable.
+    std::map<std::uint64_t, std::uint64_t> labels;
+    for (std::size_t i = 0; i < state_->orders.size(); ++i) {
+        const auto id = state_->orders[i].internal;
+        if (id == 0 || !labels.emplace(id, static_cast<std::uint64_t>(i) + 1).second)
+            throw std::logic_error("invalid or duplicate internal order ID");
+    }
+    const auto label = [&](std::uint64_t id) -> std::uint64_t {
+        if (id == 0)
+            return 0;
+        const auto it = labels.find(id);
+        if (it == labels.end())
+            throw std::logic_error("unknown internal order ID");
+        return it->second;
+    };
+    add(1);
+    add(state_->command);
+    add(state_->event);
+    add(state_->initial_feed_sequence);
+    add(state_->sessions.size());
+    for (const auto &[id, session] : state_->sessions) {
+        add(id);
+        add(session.killed);
+        const auto &r = session.limits;
+        add(r.max_order_quantity);
+        add(r.max_order_notional);
+        add(r.max_open_notional);
+        add(r.max_open_orders);
+        add(r.max_abs_position);
+        add(static_cast<std::uint64_t>(r.max_market_price));
+        add(r.allowed_symbols.size());
+        for (const auto s : r.allowed_symbols)
+            add(s);
+        add(session.requests.size());
+        for (const auto request : session.requests)
+            add(request);
+        add(session.positions.size());
+        for (const auto &[symbol, pos] : session.positions) {
+            add(symbol);
+            add(static_cast<std::uint64_t>(pos));
+        }
+        add(session.reports.size());
+        for (const auto &report : session.reports) {
+            add(report.sequence);
+            add(report.command_sequence);
+            add(report.request_id);
+            add(report.client_order_id);
+            add(label(report.internal_order_id));
+            add(report.trade_id);
+            add(report.symbol);
+            add(static_cast<std::uint64_t>(report.price));
+            add(report.quantity);
+            add(report.remaining);
+            add(static_cast<std::uint64_t>(report.kind));
+        }
+        add(session.subscription_generation);
+        add(session.subscriptions.size());
+        for (const auto &[symbol, sub] : session.subscriptions) {
+            add(symbol);
+            add(sub.generation);
+            add(sub.gap_sequence);
+            add(sub.gap);
+            add(sub.gap_sent);
+            add(sub.events.size());
+            for (const auto &e : sub.events) {
+                add(e.symbol);
+                add(e.sequence);
+                add(e.generation);
+                add(static_cast<std::uint64_t>(e.kind));
+                add(static_cast<std::uint64_t>(e.bid_price));
+                add(static_cast<std::uint64_t>(e.ask_price));
+                add(static_cast<std::uint64_t>(e.trade_price));
+                add(e.bid_quantity);
+                add(e.ask_quantity);
+                add(e.trade_quantity);
+            }
+        }
+    }
+    add(state_->orders.size());
+    for (const auto &order : state_->orders) {
+        add(order.session);
+        add(order.client);
+        add(order.request);
+        add(order.symbol);
+        add(order.open);
+    }
+    add(state_->trades.size());
+    for (const auto &t : state_->trades) {
+        add(t.command_sequence);
+        add(t.trade_id);
+        add(t.buyer_session);
+        add(t.seller_session);
+        add(label(t.buy_internal_id));
+        add(label(t.sell_internal_id));
+        add(t.symbol);
+        add(static_cast<std::uint64_t>(t.price));
+        add(t.quantity);
+    }
+    add(state_->feed_sequences.size());
+    for (const auto &[symbol, sequence] : state_->feed_sequences) {
+        add(symbol);
+        add(sequence);
+    }
+    add(state_->engines.size());
+    for (const auto &[symbol, engine] : state_->engines) {
+        add(symbol);
+        const auto counters = engine->counters();
+        add(counters.command);
+        add(counters.event);
+        add(counters.trade);
+        for (const auto side : {core::Side::Buy, core::Side::Sell}) {
+            const auto levels = engine->depth(side, std::numeric_limits<std::size_t>::max());
+            add(levels.size());
+            for (const auto &level : levels) {
+                add(static_cast<std::uint64_t>(level.price));
+                add(level.quantity);
+                add(level.order_count);
+                const auto orders = engine->orders_at(side, level.price);
+                add(orders.size());
+                for (const auto &order : orders) {
+                    add(label(order.id.value()));
+                    add(order.quantity);
+                    add(order.sequence);
+                }
+            }
+        }
+    }
+    return out;
 }
 } // namespace chronos::exchange

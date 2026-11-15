@@ -1,14 +1,38 @@
+#include "chronos/eventlog/event_log.hpp"
 #include "chronos/simulation/simulation.hpp"
 
 #include <charconv>
+#include <cstdio>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <memory>
 #include <stdexcept>
+#include <streambuf>
 #include <string_view>
 
 using namespace chronos::simulation;
 namespace {
+struct FileCloser {
+    void operator()(std::FILE *file) const noexcept {
+        if (file)
+            std::fclose(file);
+    }
+};
+class FileBuffer final : public std::streambuf {
+  public:
+    explicit FileBuffer(std::FILE *file) : file_(file) {}
+
+  protected:
+    std::streamsize xsputn(const char *data, std::streamsize size) override {
+        return static_cast<std::streamsize>(
+            std::fwrite(data, 1, static_cast<std::size_t>(size), file_));
+    }
+    int sync() override { return std::fflush(file_); }
+
+  private:
+    std::FILE *file_;
+};
 std::uint64_t number(std::string_view s) {
     std::uint64_t n = 0;
     const auto [end, ec] = std::from_chars(s.data(), s.data() + s.size(), n);
@@ -21,6 +45,7 @@ int main(int argc, char **argv) {
     try {
         ScenarioConfig c;
         bool has_symbol = false;
+        std::string record_path;
         for (int i = 1; i < argc; ++i) {
             const std::string_view key{argv[i]};
             if (key == "--help") {
@@ -28,13 +53,18 @@ int main(int argc, char **argv) {
                              "balanced|high-volume|volatile|liquidity-sweep|mixed] [--seed N] "
                              "[--participants N] [--commands N] [--symbol N] [--reference N] "
                              "[--variation N] [--min-quantity N] [--max-quantity N] [--buy-weight "
-                             "N] [--cancel-percent N] [--max-orders N] [--max-requests N]\n";
+                             "N] [--cancel-percent N] [--max-orders N] [--max-requests N] "
+                             "[--record FILE]\n";
                 return 0;
             }
             if (++i >= argc)
                 throw std::invalid_argument("missing option value");
             const std::string_view value{argv[i]};
-            if (key == "--scenario") {
+            if (key == "--record") {
+                if (!record_path.empty() || value.empty())
+                    throw std::invalid_argument("invalid or repeated record path");
+                record_path = value;
+            } else if (key == "--scenario") {
                 if (value == "balanced")
                     c.scenario = Scenario::Balanced;
                 else if (value == "high-volume")
@@ -97,7 +127,22 @@ int main(int argc, char **argv) {
                     throw std::invalid_argument("unknown option");
             }
         }
-        SimulationRunner runner(c);
+        const auto config_error = SimulationRunner::validate(c);
+        if (!config_error.empty())
+            throw std::invalid_argument(config_error);
+        std::unique_ptr<std::FILE, FileCloser> file;
+        std::unique_ptr<FileBuffer> buffer;
+        std::unique_ptr<std::ostream> stream;
+        std::unique_ptr<chronos::eventlog::EventRecorder> recorder;
+        if (!record_path.empty()) {
+            file.reset(std::fopen(record_path.c_str(), "wbx"));
+            if (!file)
+                throw std::runtime_error("cannot create new log file (it may already exist)");
+            buffer = std::make_unique<FileBuffer>(file.get());
+            stream = std::make_unique<std::ostream>(buffer.get());
+            recorder = std::make_unique<chronos::eventlog::EventRecorder>(*stream);
+        }
+        SimulationRunner runner(c, recorder.get());
         runner.start();
         runner.run_batch(c.max_commands);
         const auto &r = runner.result();
@@ -107,6 +152,13 @@ int main(int argc, char **argv) {
                       << ", cancellations " << r.cancelled << ", committed trades " << r.trades
                       << ", aggregated trades " << r.aggregated_trades
                       << "); committed operations were not rolled back.\n";
+            if (recorder && !recorder->error().empty())
+                std::cerr << "Log error: " << recorder->error() << '\n';
+            return 1;
+        }
+        if (file && std::fclose(file.release()) != 0) {
+            std::cerr
+                << "Simulation finished, but closing the log failed; recording is uncertain.\n";
             return 1;
         }
         std::cout << "Scenario: " << scenario_name(c.scenario) << " seed: " << c.seed

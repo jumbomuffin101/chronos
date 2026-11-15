@@ -1,3 +1,4 @@
+#include "chronos/eventlog/event_log.hpp"
 #include "chronos/exchange/exchange.hpp"
 #include "chronos/matching/matching_engine.hpp"
 #include "chronos/orderbook/order_book.hpp"
@@ -6,6 +7,7 @@
 #include <cstdlib>
 #include <gtest/gtest.h>
 #include <new>
+#include <sstream>
 
 // Confined to this test executable. The counter is armed only during the operation
 // under test, so GoogleTest's own allocations do not consume the failure point.
@@ -152,6 +154,42 @@ TEST(SimulationAllocation, FailedStartAndCommandNeverClaimCompletion) {
     }
     EXPECT_TRUE(observed_failure);
     EXPECT_TRUE(completed);
+}
+
+TEST(EventLogAllocation, CommandAndOutcomeAllocationFailuresRemainIncomplete) {
+    using namespace chronos;
+    simulation::ScenarioConfig config;
+    config.max_commands = 1;
+    simulation::SimCommand command;
+    command.step = 1;
+    command.session = 1;
+    command.request = 1;
+    command.client_order = 1;
+    std::ostringstream before_stream(std::ios::binary);
+    eventlog::EventRecorder before(before_stream);
+    ASSERT_TRUE(before.begin(config));
+    allocations_until_failure = 0;
+    const bool command_ok = before.command(command);
+    allocations_until_failure = -1;
+    EXPECT_FALSE(command_ok);
+    std::istringstream before_input(before_stream.str(), std::ios::binary);
+    EXPECT_FALSE(eventlog::verify(before_input).verified);
+
+    exchange::Exchange book;
+    ASSERT_TRUE(book.open_session(1));
+    std::ostringstream after_stream(std::ios::binary);
+    eventlog::EventRecorder after(after_stream);
+    ASSERT_TRUE(after.begin(config));
+    ASSERT_TRUE(after.command(command));
+    ASSERT_EQ(book.submit(1, 1, 1, SymbolId{1}, Side::Buy, OrderType::Limit, 100, 5),
+              exchange::Result::Accepted);
+    allocations_until_failure = 0;
+    const bool outcome_ok = after.outcome(command, exchange::Result::Accepted, book);
+    allocations_until_failure = -1;
+    EXPECT_FALSE(outcome_ok);
+    EXPECT_TRUE(book.find(1, 1).has_value());
+    std::istringstream after_input(after_stream.str(), std::ios::binary);
+    EXPECT_FALSE(eventlog::verify(after_input).verified);
 }
 
 TEST(ExchangeAllocation, StagedFillLeavesLiveStateUntouchedOnAllocationFailure) {

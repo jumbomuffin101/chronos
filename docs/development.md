@@ -1,5 +1,12 @@
 # Development
 
+For Phase 7B, build with `cmake --build --preset release`, then run
+`build/release/chronos_sim --scenario balanced --seed 42 --commands 100 --record session.chronos`
+and `build/release/chronos_replay --verify session.chronos`. The recorder
+creates a new file exclusively and will not replace an existing log. A process
+stream flush is not a durable sync. See the Phase 7B implementation report for
+format, limits, tests, and optional benchmarks.
+
 On Ubuntu or WSL2 Ubuntu, install `build-essential`, `cmake`, `git`, and `clang-format` (CMake 3.20 or newer). Run the configure, build, and CTest commands in the [README](../README.md). CMake FetchContent fetches GoogleTest v1.14.0 when `BUILD_TESTING` is enabled (the default); the first configure needs network access. To build only the CLI without fetching tests, configure separately with `-DBUILD_TESTING=OFF`. Google Benchmark v1.8.3 is fetched only when `CHRONOS_ENABLE_BENCHMARKS=ON`; see the [benchmark methodology](phase4-benchmark-methodology.md) for its targets. For disconnected builds, CMake's `FETCHCONTENT_SOURCE_DIR_GOOGLETEST` and `FETCHCONTENT_SOURCE_DIR_GOOGLEBENCHMARK` can point to local checkouts of those versions.
 
 `chronos_sim --help` lists Phase 7A simulation options; `--symbol` may be

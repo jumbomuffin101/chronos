@@ -108,6 +108,9 @@ class Exchange {
     [[nodiscard]] std::optional<AuditTrade> trade(std::size_t index) const noexcept;
     [[nodiscard]] std::optional<orderbook::OrderSnapshot> find(std::uint64_t session,
                                                                std::uint64_t client_order_id) const;
+    // Owner-thread-only, read-only canonical verification words. Internal order
+    // IDs are replaced by the order's 1-based history ordinal. Not a recovery API.
+    [[nodiscard]] std::vector<std::uint64_t> verification_state() const;
 
   private:
     struct State;

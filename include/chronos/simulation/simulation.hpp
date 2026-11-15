@@ -97,11 +97,22 @@ struct SimulationResult {
     std::vector<TradeSummary> trade_history;
     std::vector<PositionSummary> positions;
 };
+class SimulationObserver {
+  public:
+    virtual ~SimulationObserver() = default;
+    virtual bool begin(const ScenarioConfig &config) = 0;
+    virtual bool command(const SimCommand &command) = 0;
+    // Called after the exchange result but before private reports are drained.
+    virtual bool outcome(const SimCommand &command, exchange::Result result,
+                         const exchange::Exchange &exchange) = 0;
+    virtual bool finish(const SimulationResult &result, Lifecycle state,
+                        const exchange::Exchange &exchange) = 0;
+};
 
 class SimulationRunner {
   public:
     static constexpr std::uint32_t generator_version = 2;
-    explicit SimulationRunner(ScenarioConfig config);
+    explicit SimulationRunner(ScenarioConfig config, SimulationObserver *observer = nullptr);
     ~SimulationRunner();
     SimulationRunner(const SimulationRunner &) = delete;
     SimulationRunner &operator=(const SimulationRunner &) = delete;

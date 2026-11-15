@@ -9,3 +9,7 @@ chronos_configure_target(chronos_allocation_probe)
 add_executable(chronos_sim_bench simulation_bench.cpp)
 target_link_libraries(chronos_sim_bench PRIVATE chronos_core benchmark::benchmark)
 chronos_configure_target(chronos_sim_bench)
+
+add_executable(chronos_eventlog_bench eventlog_bench.cpp)
+target_link_libraries(chronos_eventlog_bench PRIVATE chronos_core benchmark::benchmark)
+chronos_configure_target(chronos_eventlog_bench)
