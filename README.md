@@ -22,6 +22,10 @@ For isolated simulation replay, add `--record session.chronos` (the file must
 not already exist), then run `./build/release/chronos_replay --verify session.chronos`.
 These logs are bounded verification artifacts, not durable recovery journals;
 see [Phase 7B](docs/phase7b-implementation-report.md).
+
+Phase 7C.1 currently provides a diagnostic state checkpoint only; it cannot
+restore an exchange. See [the checkpoint design](docs/phase7c1-snapshot-design.md)
+for its limits and the outstanding reconstruction work.
 See the [simulation design](docs/phase7a-simulation-design.md) and
 [implementation report](docs/phase7a-implementation-report.md); simulated
 results are not durable event replay or real trading.

@@ -13,8 +13,7 @@ namespace chronos::exchange {
 namespace {
 // Serialize allocation across Exchange instances, but publish an ID only after
 // the staged transaction is ready to commit. The process epoch resets on exit.
-std::mutex id_mutex;
-std::uint64_t last_internal_id = 0;
+constinit detail::OrderIdAllocator process_allocator{true};
 } // namespace
 struct Exchange::State {
     struct Subscription {
@@ -141,8 +140,22 @@ static_assert(std::is_nothrow_destructible_v<Report>);
 Exchange::Exchange(std::size_t sessions, std::size_t orders, std::size_t reports,
                    std::size_t requests, std::uint64_t initial_feed_sequence)
     : state_(std::make_unique<State>()), max_sessions_(sessions), max_orders_(orders),
-      max_reports_(reports), max_requests_(requests) {
+      max_reports_(reports), max_requests_(requests), allocator_(&process_allocator) {
     state_->initial_feed_sequence = initial_feed_sequence;
+}
+Exchange::Exchange(IsolatedTag, std::size_t sessions, std::size_t orders, std::size_t reports,
+                   std::size_t requests, std::uint64_t initial_feed_sequence, std::uint64_t last_id)
+    : state_(std::make_unique<State>()), max_sessions_(sessions), max_orders_(orders),
+      max_reports_(reports), max_requests_(requests), private_allocator_(false, last_id),
+      allocator_(&private_allocator_), isolated_(true) {
+    state_->initial_feed_sequence = initial_feed_sequence;
+}
+std::unique_ptr<Exchange> Exchange::isolated(std::size_t sessions, std::size_t orders,
+                                             std::size_t reports, std::size_t requests,
+                                             std::uint64_t initial_feed_sequence,
+                                             std::uint64_t last_id) {
+    return std::unique_ptr<Exchange>(new Exchange(IsolatedTag{}, sessions, orders, reports,
+                                                  requests, initial_feed_sequence, last_id));
 }
 Exchange::~Exchange() = default;
 bool Exchange::open_session(std::uint64_t session) {
@@ -369,15 +382,15 @@ Result Exchange::submit(std::uint64_t session, std::uint64_t request, std::uint6
         return Result::Capacity;
     if (state_->command == std::numeric_limits<std::uint64_t>::max())
         return Result::CounterExhausted;
-    std::lock_guard lock{id_mutex};
-    if (last_internal_id == std::numeric_limits<std::uint64_t>::max())
+    detail::OrderIdAllocator::Reservation reservation(*allocator_);
+    if (reservation.id() == 0)
         return Result::CounterExhausted;
     const auto before_book = state_->top(symbol.value(), MarketKind::Book, 0);
     auto next = state_->clone();
     auto &engine = next->engines[symbol.value()];
     if (!engine)
         engine = std::make_unique<matching::MatchingEngine>(symbol);
-    const auto internal_id = last_internal_id + 1;
+    const auto internal_id = reservation.id();
     auto outcome =
         engine->submit({core::OrderId{internal_id}, symbol, side, type, price, quantity});
     if (outcome.error != matching::Error::None)
@@ -445,7 +458,7 @@ Result Exchange::submit(std::uint64_t session, std::uint64_t request, std::uint6
             return Result::CounterExhausted;
     }
     state_.swap(next);
-    last_internal_id = internal_id;
+    reservation.commit();
     return Result::Accepted;
 }
 
@@ -521,8 +534,52 @@ std::optional<orderbook::OrderSnapshot> Exchange::find(std::uint64_t session,
     return state_->engines.at(it->symbol)->find(core::OrderId{it->internal});
 }
 std::vector<std::uint64_t> Exchange::verification_state() const {
+    return verification_state_bounded(std::numeric_limits<std::size_t>::max());
+}
+std::vector<std::uint64_t> Exchange::verification_state_bounded(std::size_t max_words) const {
+    // Exact no-allocation shape preflight before allocating output or
+    // normalization nodes. All arithmetic is checked against the caller's cap.
+    std::size_t minimum = 0;
+    const auto charge = [&](std::size_t count, std::size_t words) {
+        if (words != 0 && count > (max_words - minimum) / words)
+            throw std::length_error("verification state exceeds word limit");
+        minimum += count * words;
+    };
+    charge(1, 9); // top-level words and collection lengths
+    charge(state_->orders.size(), 5);
+    charge(state_->trades.size(), 9);
+    charge(state_->feed_sequences.size(), 2);
+    charge(state_->engines.size(), 6); // symbol/counters and two side lengths
+    for (const auto &[id, session] : state_->sessions) {
+        (void)id;
+        charge(1, 14); // fixed session words
+        charge(session.limits.allowed_symbols.size(), 1);
+        charge(session.requests.size(), 1);
+        charge(session.positions.size(), 2);
+        charge(session.reports.size(), 11);
+        for (const auto &[symbol, sub] : session.subscriptions) {
+            (void)symbol;
+            charge(1, 6);
+            charge(sub.events.size(), 10);
+        }
+    }
+    for (const auto &[symbol, engine] : state_->engines) {
+        (void)symbol;
+        charge(engine->price_level_count(core::Side::Buy), 4);
+        charge(engine->price_level_count(core::Side::Sell), 4);
+        charge(engine->resting_order_count(), 3);
+    }
     std::vector<std::uint64_t> out;
-    const auto add = [&](std::uint64_t v) { out.push_back(v); };
+    out.reserve(minimum);
+    const auto add = [&](std::uint64_t v) {
+        if (out.size() == max_words)
+            throw std::length_error("verification state exceeds word limit");
+        if (out.size() == out.capacity()) {
+            const auto grow = out.size() > max_words / 2 ? max_words : out.size() * 2;
+            out.reserve(std::min(max_words, std::max<std::size_t>(1, grow)));
+        }
+        out.push_back(v);
+    };
     // Preserve identity relationships while allowing process-wide IDs to differ
     // between recording and replay. Duplicate or zero IDs are not normalizable.
     std::map<std::uint64_t, std::uint64_t> labels;
@@ -635,12 +692,16 @@ std::vector<std::uint64_t> Exchange::verification_state() const {
         add(counters.event);
         add(counters.trade);
         for (const auto side : {core::Side::Buy, core::Side::Sell}) {
-            const auto levels = engine->depth(side, std::numeric_limits<std::size_t>::max());
+            const auto levels = engine->depth(side, max_words / 4 + 1);
+            if (levels.size() > (max_words - out.size()) / 4)
+                throw std::length_error("verification levels exceed word limit");
             add(levels.size());
             for (const auto &level : levels) {
                 add(static_cast<std::uint64_t>(level.price));
                 add(level.quantity);
                 add(level.order_count);
+                if (level.order_count > (max_words - out.size()) / 3)
+                    throw std::length_error("verification orders exceed word limit");
                 const auto orders = engine->orders_at(side, level.price);
                 add(orders.size());
                 for (const auto &order : orders) {

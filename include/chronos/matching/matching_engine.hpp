@@ -76,6 +76,11 @@ class MatchingEngine {
     [[nodiscard]] std::vector<orderbook::OrderSnapshot> orders_at(core::Side side,
                                                                   core::Price price) const;
     [[nodiscard]] Counters counters() const noexcept { return counters_; }
+    // Read-only book shape for bounded inspection; does not allocate.
+    [[nodiscard]] std::size_t resting_order_count() const noexcept { return book_->order_count(); }
+    [[nodiscard]] std::size_t price_level_count(core::Side side) const noexcept {
+        return side == core::Side::Buy ? book_->bid_levels() : book_->ask_levels();
+    }
     // Independent snapshot for an enclosing transaction. Allocation failure leaves
     // the source engine unchanged; the returned book has its own identity.
     [[nodiscard]] std::unique_ptr<MatchingEngine> clone() const;

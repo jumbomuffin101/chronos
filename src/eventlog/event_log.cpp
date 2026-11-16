@@ -333,11 +333,14 @@ bool EventRecorder::finish(const simulation::SimulationResult &r, simulation::Li
     }
 }
 
-ReplayResult verify(std::istream &in) {
+ReplayResult verify(std::istream &in, ReplayAllocation allocation) {
     ReplayResult result;
     std::vector<Record> records;
     std::uint64_t offset = 0;
     try {
+        if (allocation != ReplayAllocation::Isolated &&
+            allocation != ReplayAllocation::SharedProcess)
+            throw std::invalid_argument("invalid replay allocation mode");
         std::array<std::uint8_t, 8> m{};
         if (!read_exact(in, m.data(), m.size()) || m != magic)
             throw std::runtime_error("invalid or truncated magic");
@@ -412,10 +415,15 @@ ReplayResult verify(std::istream &in) {
         end.end();
         if (totals[0] != c.max_commands || totals[1] != c.max_commands || totals[6] != totals[7])
             throw std::runtime_error("invalid terminal counts");
-        exchange::Exchange exchange(c.participants, c.max_order_history, 2 * c.max_commands + 2,
-                                    c.max_requests_per_session);
+        auto exchange =
+            allocation == ReplayAllocation::Isolated
+                ? exchange::Exchange::isolated(c.participants, c.max_order_history,
+                                               2 * c.max_commands + 2, c.max_requests_per_session)
+                : std::make_unique<exchange::Exchange>(c.participants, c.max_order_history,
+                                                       2 * c.max_commands + 2,
+                                                       c.max_requests_per_session);
         for (std::size_t i = 1; i <= c.participants; ++i)
-            if (!exchange.open_session(i) || !exchange.configure_risk(i, c.risk))
+            if (!exchange->open_session(i) || !exchange->configure_risk(i, c.risk))
                 throw std::runtime_error("session initialization failed");
         std::uint64_t accepted_orders = 0, rejected_orders = 0, cancelled = 0, rejected_cancels = 0;
         for (std::size_t i = 0; i < commands.size(); ++i) {
@@ -424,10 +432,10 @@ ReplayResult verify(std::istream &in) {
             result.offset = record.offset;
             result.sequence = i + 1;
             const auto actual = cmd.kind == simulation::CommandKind::Cancel
-                                    ? exchange.cancel(cmd.session, cmd.request, cmd.client_order)
-                                    : exchange.submit(cmd.session, cmd.request, cmd.client_order,
-                                                      core::SymbolId{cmd.symbol}, cmd.side,
-                                                      cmd.type, cmd.price, cmd.quantity);
+                                    ? exchange->cancel(cmd.session, cmd.request, cmd.client_order)
+                                    : exchange->submit(cmd.session, cmd.request, cmd.client_order,
+                                                       core::SymbolId{cmd.symbol}, cmd.side,
+                                                       cmd.type, cmd.price, cmd.quantity);
             Cursor o{record.payload};
             const auto expected = o.word();
             const auto state = read_words(o);
@@ -436,7 +444,7 @@ ReplayResult verify(std::istream &in) {
                 throw std::runtime_error("outcome mismatch: expected " + std::to_string(expected) +
                                          " actual " +
                                          std::to_string(static_cast<std::uint64_t>(actual)));
-            const auto actual_state = exchange.verification_state();
+            const auto actual_state = exchange->verification_state();
             if (state != actual_state) {
                 const auto mismatch = std::mismatch(state.begin(), state.end(),
                                                     actual_state.begin(), actual_state.end());
@@ -462,14 +470,14 @@ ReplayResult verify(std::istream &in) {
                     ++rejected_orders;
             }
             for (std::size_t session = 1; session <= c.participants; ++session)
-                while (exchange.front(session))
-                    exchange.pop(session);
+                while (exchange->front(session))
+                    exchange->pop(session);
         }
         result.offset = last.offset;
         result.sequence = last.seq;
         std::uint64_t executed_quantity = 0;
-        for (std::size_t i = 0; i < exchange.trade_count(); ++i) {
-            const auto trade = exchange.trade(i);
+        for (std::size_t i = 0; i < exchange->trade_count(); ++i) {
+            const auto trade = exchange->trade(i);
             if (!trade ||
                 trade->quantity > std::numeric_limits<std::uint64_t>::max() - executed_quantity)
                 throw std::runtime_error("executed quantity overflow");
@@ -477,24 +485,24 @@ ReplayResult verify(std::istream &in) {
         }
         if (totals[2] != accepted_orders || totals[3] != rejected_orders ||
             totals[4] != cancelled || totals[5] != rejected_cancels ||
-            totals[6] != exchange.trade_count())
+            totals[6] != exchange->trade_count())
             throw std::runtime_error("terminal count mismatch");
         if (totals[8] != executed_quantity)
             throw std::runtime_error("executed quantity mismatch");
         for (const auto symbol : c.symbols) {
-            if (!exchange.subscribe(1, core::SymbolId{symbol}))
+            if (!exchange->subscribe(1, core::SymbolId{symbol}))
                 throw std::runtime_error("final snapshot failed");
-            const auto top = exchange.market_front(1);
+            const auto top = exchange->market_front(1);
             if (!top || top->symbol != symbol)
                 throw std::runtime_error("final snapshot mismatch");
-            exchange.market_pop(1, *top);
+            exchange->market_pop(1, *top);
         }
-        if (final_state != exchange.verification_state())
+        if (final_state != exchange->verification_state())
             throw std::runtime_error("final state mismatch");
         result.commands = commands.size();
         result.accepted = accepted_orders + cancelled;
         result.rejected = rejected_orders + rejected_cancels;
-        result.trades = exchange.trade_count();
+        result.trades = exchange->trade_count();
         result.verified = true;
         result.offset = 0;
         result.sequence = 0;

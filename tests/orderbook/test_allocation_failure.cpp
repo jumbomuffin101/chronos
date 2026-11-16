@@ -3,6 +3,7 @@
 #include "chronos/matching/matching_engine.hpp"
 #include "chronos/orderbook/order_book.hpp"
 #include "chronos/simulation/simulation.hpp"
+#include "chronos/snapshot/checkpoint.hpp"
 
 #include <cstdlib>
 #include <gtest/gtest.h>
@@ -190,6 +191,23 @@ TEST(EventLogAllocation, CommandAndOutcomeAllocationFailuresRemainIncomplete) {
     EXPECT_TRUE(book.find(1, 1).has_value());
     std::istringstream after_input(after_stream.str(), std::ios::binary);
     EXPECT_FALSE(eventlog::verify(after_input).verified);
+}
+TEST(CheckpointAllocation, FailedCaptureDoesNotChangeExchange) {
+    chronos::exchange::Exchange book;
+    ASSERT_TRUE(book.open_session(1));
+    ASSERT_EQ(book.submit(1, 1, 1, SymbolId{1}, Side::Buy, OrderType::Limit, 100, 5),
+              chronos::exchange::Result::Accepted);
+    const auto original = book.verification_state();
+    bool threw = false;
+    allocations_until_failure = 0;
+    try {
+        (void)chronos::snapshot::capture(book, 1);
+    } catch (const std::bad_alloc &) {
+        threw = true;
+    }
+    allocations_until_failure = -1;
+    EXPECT_TRUE(threw);
+    EXPECT_EQ(book.verification_state(), original);
 }
 
 TEST(ExchangeAllocation, StagedFillLeavesLiveStateUntouchedOnAllocationFailure) {

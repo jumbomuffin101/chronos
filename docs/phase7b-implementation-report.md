@@ -6,6 +6,12 @@ restart recovery, authenticated reconnect, exactly-once delivery, and live
 trading are outside this implementation. A log includes private reports and
 account state and should be treated as sensitive local data.
 
+Allocator update: replay now defaults to a private exchange ID allocator and
+does not consume the process-wide live ID sequence. API callers can explicitly
+request `ReplayAllocation::SharedProcess` for the former behavior. Numeric IDs
+remain normalized in either mode; the log format is unchanged. See
+[allocator isolation](phase7c1a-allocator-isolation-report.md).
+
 ## Format 1.0
 
 All integers are little-endian; signed prices and positions are represented as

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chronos/exchange/order_id_allocator.hpp"
 #include "chronos/matching/matching_engine.hpp"
 
 #include <cstddef>
@@ -83,6 +84,13 @@ class Exchange {
     ~Exchange();
     Exchange(const Exchange &) = delete;
     Exchange &operator=(const Exchange &) = delete;
+    // Private IDs are unique only within this instance. The returned exchange
+    // cannot be attached to Gateway; this is not a publication mechanism.
+    [[nodiscard]] static std::unique_ptr<Exchange>
+    isolated(std::size_t max_sessions = 16, std::size_t max_orders = 1024,
+             std::size_t max_reports_per_session = 128, std::size_t max_requests_per_session = 1024,
+             std::uint64_t initial_feed_sequence = 0, std::uint64_t last_private_id = 0);
+    [[nodiscard]] bool is_isolated() const noexcept { return isolated_; }
     [[nodiscard]] bool open_session(std::uint64_t session);
     // Configure only when no orders are open; kill state can change at any time.
     [[nodiscard]] bool configure_risk(std::uint64_t session, const RiskLimits &limits);
@@ -111,10 +119,20 @@ class Exchange {
     // Owner-thread-only, read-only canonical verification words. Internal order
     // IDs are replaced by the order's 1-based history ordinal. Not a recovery API.
     [[nodiscard]] std::vector<std::uint64_t> verification_state() const;
+    // As above, but rejects states exceeding max_words before allocating an
+    // unbounded output or ID-normalization table. Not a restoration format.
+    [[nodiscard]] std::vector<std::uint64_t>
+    verification_state_bounded(std::size_t max_words) const;
 
   private:
+    struct IsolatedTag {};
+    Exchange(IsolatedTag, std::size_t sessions, std::size_t orders, std::size_t reports,
+             std::size_t requests, std::uint64_t initial_feed_sequence, std::uint64_t last_id);
     struct State;
     std::unique_ptr<State> state_;
     std::size_t max_sessions_, max_orders_, max_reports_, max_requests_;
+    detail::OrderIdAllocator private_allocator_{false};
+    detail::OrderIdAllocator *allocator_;
+    bool isolated_ = false;
 };
 } // namespace chronos::exchange

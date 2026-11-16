@@ -275,6 +275,54 @@ TEST(EventLog, MalformedLaterRecordIsRejectedBeforeReplayMutatesExchange) {
     const auto after = issue_order();
     EXPECT_EQ(after, before + 1);
 }
+TEST(EventLog, ValidReplayConsumesTheSharedProcessOrderIdAllocator) {
+    simulation::ScenarioConfig config;
+    config.max_commands = 1;
+    const auto log = recording(config);
+    const auto issue = [] {
+        exchange::Exchange book;
+        EXPECT_TRUE(book.open_session(1));
+        EXPECT_EQ(book.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit,
+                              100, 1),
+                  exchange::Result::Accepted);
+        const auto report = book.front(1);
+        EXPECT_TRUE(report.has_value());
+        return report ? report->internal_order_id : 0;
+    };
+    const auto before = issue();
+    std::istringstream in(log, std::ios::binary);
+    ASSERT_TRUE(eventlog::verify(in, eventlog::ReplayAllocation::SharedProcess).verified);
+    const auto after = issue();
+    EXPECT_EQ(after, before + 2);
+}
+TEST(EventLog, DefaultReplayDoesNotConsumeSharedProcessOrderIds) {
+    simulation::ScenarioConfig config;
+    config.max_commands = 1;
+    const auto log = recording(config);
+    const auto issue = [] {
+        exchange::Exchange book;
+        EXPECT_TRUE(book.open_session(1));
+        EXPECT_EQ(book.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit,
+                              100, 1),
+                  exchange::Result::Accepted);
+        const auto report = book.front(1);
+        EXPECT_TRUE(report.has_value());
+        return report ? report->internal_order_id : 0;
+    };
+    const auto before = issue();
+    ASSERT_TRUE(replay(log).verified);
+    const auto after = issue();
+    EXPECT_EQ(after, before + 1);
+}
+TEST(EventLog, InvalidReplayAllocationModeIsRejected) {
+    simulation::ScenarioConfig config;
+    config.max_commands = 1;
+    const auto log = recording(config);
+    std::istringstream input(log, std::ios::binary);
+    const auto result = eventlog::verify(input, static_cast<eventlog::ReplayAllocation>(42));
+    EXPECT_FALSE(result.verified);
+    EXPECT_NE(result.error.find("allocation mode"), std::string::npos);
+}
 TEST(EventLog, NormalizationPreservesOwnershipAndFifoAcrossDifferentProcessIds) {
     exchange::Exchange first, second, reversed;
     for (auto *book : {&first, &second, &reversed}) {

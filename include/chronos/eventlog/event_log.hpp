@@ -39,6 +39,9 @@ struct ReplayResult {
     std::uint64_t offset = 0, sequence = 0;
     std::string error;
 };
+enum class ReplayAllocation { Isolated, SharedProcess };
 // Fully validates the bounded file before constructing or mutating an exchange.
-[[nodiscard]] ReplayResult verify(std::istream &stream);
+// SharedProcess is explicit compatibility behavior and consumes process IDs.
+[[nodiscard]] ReplayResult verify(std::istream &stream,
+                                  ReplayAllocation allocation = ReplayAllocation::Isolated);
 } // namespace chronos::eventlog

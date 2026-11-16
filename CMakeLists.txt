@@ -8,7 +8,7 @@ option(CHRONOS_ENABLE_SANITIZERS "Enable address and undefined behavior sanitize
 option(CHRONOS_ENABLE_BENCHMARKS "Fetch Google Benchmark for future benchmarks" OFF)
 option(CHRONOS_ENABLE_EXCHANGE_BASELINE "Build the Linux exchange-layer baseline" OFF)
 
-add_library(chronos_core src/orderbook/order_book.cpp src/matching/matching_engine.cpp src/exchange/exchange.cpp src/simulation/simulation.cpp src/eventlog/event_log.cpp)
+add_library(chronos_core src/orderbook/order_book.cpp src/matching/matching_engine.cpp src/exchange/exchange.cpp src/simulation/simulation.cpp src/eventlog/event_log.cpp src/snapshot/checkpoint.cpp)
 target_compile_features(chronos_core PUBLIC cxx_std_20)
 target_include_directories(chronos_core PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 

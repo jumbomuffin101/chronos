@@ -13,3 +13,11 @@ chronos_configure_target(chronos_sim_bench)
 add_executable(chronos_eventlog_bench eventlog_bench.cpp)
 target_link_libraries(chronos_eventlog_bench PRIVATE chronos_core benchmark::benchmark)
 chronos_configure_target(chronos_eventlog_bench)
+
+add_executable(chronos_checkpoint_bench checkpoint_bench.cpp)
+target_link_libraries(chronos_checkpoint_bench PRIVATE chronos_core benchmark::benchmark)
+chronos_configure_target(chronos_checkpoint_bench)
+
+add_executable(chronos_id_allocator_bench id_allocator_bench.cpp)
+target_link_libraries(chronos_id_allocator_bench PRIVATE chronos_core benchmark::benchmark)
+chronos_configure_target(chronos_id_allocator_bench)

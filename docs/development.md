@@ -1,5 +1,9 @@
 # Development
 
+The Phase 7C.1 `chronos::snapshot` module currently supplies a diagnostic
+checkpoint and comparison API, not exchange restoration. Its format and
+limitations are documented in `phase7c1-snapshot-design.md`.
+
 For Phase 7B, build with `cmake --build --preset release`, then run
 `build/release/chronos_sim --scenario balanced --seed 42 --commands 100 --record session.chronos`
 and `build/release/chronos_replay --verify session.chronos`. The recorder
