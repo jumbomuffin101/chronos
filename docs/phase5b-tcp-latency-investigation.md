@@ -4,8 +4,9 @@
 
 Tracing is optional. `TransportOptions::trace` accepts a nonblocking, `noexcept`
 callback and caller-owned context. When no callback is supplied, no diagnostic
-timestamps are taken. The gateway callback runs on the socket/exchange owner
-thread; client callbacks run on the thread invoking `Client`. Callers must make
+timestamps are taken. The original socket/exchange events run on the owner
+thread; client events run on the thread invoking `Client`. Later control-queue
+and stop trace events may run on the control or stop caller's thread. Callers must make
 the callback safe for concurrent use and keep its context alive until both sides
 are finished. The benchmark uses a fixed-capacity in-memory buffer and processes
 it only after the gateway has stopped. Instrumentation adds clock calls and

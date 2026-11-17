@@ -1,5 +1,9 @@
 # Development
 
+Phase 7C.2A's owner/allocator prerequisite review is documented in
+`phase7c2a-journal-design.md`. It does not implement a durable journal or
+change the existing gateway's acknowledgment semantics.
+
 The Phase 7C.1 `CHROVIEW` diagnostic checkpoint and comparison API does not
 restore an exchange. Its format and limitations are documented in
 `phase7c1-snapshot-design.md`.

@@ -1,5 +1,9 @@
 # Chronos
 
+The Phase 7C.2A journal remains unimplemented; the transaction ownership
+prerequisites and current limitations are described in
+[the journal design review](docs/phase7c2a-journal-design.md).
+
 Chronos is a C++20 electronic exchange and trading **simulator**. It does not execute real financial transactions. Its loopback-only development gateway routes simulated limit and market orders to the in-memory matching engine, applies local account risk controls, returns private execution reports and publishes public best-book and trade data.
 
 The planned system separates a deterministic matching core and limit order book from TCP order entry, market-data publishing, risk checks, event logging and replay. Python clients and a React/Next.js dashboard will interact with the eventual gateway. See [architecture](docs/architecture.md) and [supported orders](docs/supported-orders.md).

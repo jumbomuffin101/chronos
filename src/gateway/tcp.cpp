@@ -1,5 +1,5 @@
 #include "chronos/gateway/tcp.hpp"
-#include "chronos/exchange/exchange.hpp"
+#include "chronos/exchange/live_owner.hpp"
 #include "chronos/gateway/ingress.hpp"
 
 #include <algorithm>
@@ -172,8 +172,14 @@ class Gateway::Impl {
     }
     ~Impl() { stop(); }
     void stop() noexcept {
+        std::lock_guard lock{stop_mutex_};
         if (thread_.joinable()) {
-            thread_.request_stop();
+            {
+                std::lock_guard controls_lock{controls_mutex_};
+                stopping_ = true;
+                thread_.request_stop();
+            }
+            trace(options_.trace, TracePoint::StopRequested, 0, 0);
             thread_.join();
         }
         listener_ = Socket{};
@@ -192,10 +198,11 @@ class Gateway::Impl {
         command->limits = limits;
         {
             std::lock_guard lock{controls_mutex_};
-            if (!running_.load() || controls_.size() >= 32)
+            if (!running_.load() || stopping_ || controls_.size() >= 32)
                 return false;
             controls_.push_back(command);
         }
+        trace(options_.trace, TracePoint::ControlQueued, session, 0);
         std::unique_lock lock{command->mutex};
         if (!command->completed.wait_for(lock, timeout, [&] { return command->done; })) {
             if (!command->started) {
@@ -217,19 +224,37 @@ class Gateway::Impl {
     }
 
   private:
-    void process_controls() {
+    void process_controls(std::stop_token stop) {
         std::vector<std::shared_ptr<Control>> commands;
         {
             std::lock_guard lock{controls_mutex_};
             commands.swap(controls_);
         }
+        if (!commands.empty())
+            trace(options_.trace, TracePoint::ControlBatchTaken, 0, 0,
+                  static_cast<std::uint8_t>(commands.size()));
         for (const auto &command : commands) {
+            bool stopped = false;
             {
+                // This lock also serializes starting a control with a stop request.
+                std::lock_guard controls_lock{controls_mutex_};
                 std::lock_guard lock{command->mutex};
                 if (command->cancelled)
                     continue;
-                command->started = true;
+                if (stop.stop_requested()) {
+                    command->done = true;
+                    command->result = false;
+                    stopped = true;
+                } else {
+                    command->started = true;
+                }
             }
+            if (stopped) {
+                trace(options_.trace, TracePoint::ControlCompleted, command->session, 0, 0);
+                command->completed.notify_one();
+                continue;
+            }
+            trace(options_.trace, TracePoint::ControlStarted, command->session, 0);
             bool result = false;
             try {
                 result = command->configure
@@ -243,6 +268,8 @@ class Gateway::Impl {
                 command->result = result;
                 command->done = true;
             }
+            trace(options_.trace, TracePoint::ControlCompleted, command->session, 0,
+                  result ? 1 : 0);
             command->completed.notify_one();
         }
     }
@@ -402,9 +429,10 @@ class Gateway::Impl {
     }
     void run(std::stop_token stop) noexcept {
         try {
+            exchange_.bind();
             std::vector<Session> sessions;
             while (!stop.stop_requested()) {
-                process_controls();
+                process_controls(stop);
                 detail::Ingress ingress;
                 for (auto &s : sessions)
                     if (!s.dead && (!queue_report(s) || !queue_market(s)))
@@ -544,19 +572,37 @@ class Gateway::Impl {
             }
         } catch (...) { /* Socket owners close on exit; running() reports service failure. */
         }
-        running_.store(false);
+        (void)exchange_.finish();
+        std::vector<std::shared_ptr<Control>> pending;
+        {
+            std::lock_guard lock{controls_mutex_};
+            running_.store(false);
+            pending.swap(controls_);
+        }
+        for (const auto &command : pending) {
+            {
+                std::lock_guard lock{command->mutex};
+                command->cancelled = true;
+                command->done = true;
+                command->result = false;
+            }
+            trace(options_.trace, TracePoint::ControlCompleted, command->session, 0, 0);
+            command->completed.notify_one();
+        }
     }
     Socket listener_;
     std::size_t maximum_;
     std::chrono::milliseconds idle_;
     std::uint16_t port_ = 0;
     std::uint64_t next_id_ = 0;
-    exchange::Exchange exchange_;
+    exchange::LiveExchangeOwner exchange_;
     TransportOptions options_;
     exchange::RiskLimits default_risk_;
     std::mutex controls_mutex_;
     std::vector<std::shared_ptr<Control>> controls_;
+    bool stopping_ = false; // protected by controls_mutex_
     std::atomic_bool running_{true};
+    std::mutex stop_mutex_;
     std::jthread thread_;
 };
 Gateway::Gateway(std::uint16_t port, std::size_t max_sessions, std::chrono::milliseconds idle,

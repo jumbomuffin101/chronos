@@ -25,3 +25,11 @@ chronos_configure_target(chronos_id_allocator_bench)
 add_executable(chronos_restorable_bench restorable_bench.cpp)
 target_link_libraries(chronos_restorable_bench PRIVATE chronos_core benchmark::benchmark)
 chronos_configure_target(chronos_restorable_bench)
+
+add_executable(chronos_offline_owner_bench offline_owner_bench.cpp)
+target_link_libraries(chronos_offline_owner_bench PRIVATE chronos_core benchmark::benchmark)
+chronos_configure_target(chronos_offline_owner_bench)
+
+add_executable(chronos_live_owner_bench live_owner_bench.cpp)
+target_link_libraries(chronos_live_owner_bench PRIVATE chronos_core benchmark::benchmark)
+chronos_configure_target(chronos_live_owner_bench)

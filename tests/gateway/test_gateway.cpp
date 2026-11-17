@@ -5,8 +5,10 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <fcntl.h>
 #include <gtest/gtest.h>
+#include <mutex>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <thread>
@@ -33,6 +35,40 @@ struct TraceCapture {
                                return event.point == point && event.request_id == request &&
                                       (value < 0 || event.value == value);
                            });
+    }
+};
+// Test-only scheduling gate. Production trace callbacks must be nonblocking.
+struct ControlRaceTrace {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool hold_dispatch = false, blocked = false, release = false, gate_timeout = false;
+    bool hold_batch = false, batch_blocked = false, release_batch = false;
+    bool stop_requested = false;
+    std::size_t queued = 0, started = 0, completed = 0, successful = 0;
+    static void record(void *context, const TraceEvent &event) noexcept {
+        auto &self = *static_cast<ControlRaceTrace *>(context);
+        std::unique_lock lock(self.mutex);
+        if (event.point == TracePoint::Dispatch && self.hold_dispatch) {
+            self.blocked = true;
+            self.changed.notify_all();
+            if (!self.changed.wait_for(lock, 5s, [&] { return self.release; }))
+                self.gate_timeout = true;
+        } else if (event.point == TracePoint::ControlBatchTaken && self.hold_batch) {
+            self.batch_blocked = true;
+            self.changed.notify_all();
+            if (!self.changed.wait_for(lock, 5s, [&] { return self.release_batch; }))
+                self.gate_timeout = true;
+        } else if (event.point == TracePoint::ControlQueued)
+            ++self.queued;
+        else if (event.point == TracePoint::ControlStarted)
+            ++self.started;
+        else if (event.point == TracePoint::ControlCompleted) {
+            ++self.completed;
+            if (event.value == 1)
+                ++self.successful;
+        } else if (event.point == TracePoint::StopRequested)
+            self.stop_requested = true;
+        self.changed.notify_all();
     }
 };
 Frame message(MessageType type, std::uint64_t id = 1) {
@@ -683,4 +719,141 @@ TEST(GatewayExchange, OwnerThreadAdminKillAllowsCancellation) {
     ASSERT_TRUE(client.receive(f));
     ASSERT_TRUE(client.receive(f));
     EXPECT_EQ(f.payload[44], 3);
+}
+
+TEST(GatewayExchange, ControlsAreRejectedAfterTerminalShutdown) {
+    Gateway server{0};
+    server.stop();
+    EXPECT_FALSE(server.running());
+    EXPECT_FALSE(server.set_killed(1, true, 100ms));
+    EXPECT_FALSE(server.configure_risk(1, {}, 100ms));
+    EXPECT_EQ(server.trade_count(), 0U);
+    EXPECT_FALSE(server.pending_report(1));
+    server.stop();
+}
+
+TEST(GatewayExchange, ControlCompletesOnceBeforeShutdown) {
+    ControlRaceTrace trace;
+    TransportOptions options;
+    options.trace = {ControlRaceTrace::record, &trace};
+    Gateway server{0, 16, 5s, options};
+    Client client{server.port()};
+    Frame reply;
+    ASSERT_TRUE(client.exchange(message(MessageType::Hello), reply));
+    const auto session = field(reply, 0);
+    ASSERT_TRUE(server.set_killed(session, true, 2s));
+    ASSERT_TRUE(client.exchange(order(1, 1, 1, 0, 0, 100, 1), reply));
+    EXPECT_EQ(reply.type, MessageType::OrderAck);
+    EXPECT_EQ(reply.payload[8], static_cast<std::uint8_t>(chronos::exchange::Result::RiskKilled));
+    server.stop();
+    server.stop();
+    std::lock_guard lock(trace.mutex);
+    EXPECT_EQ(trace.queued, 1U);
+    EXPECT_EQ(trace.started, 1U);
+    EXPECT_EQ(trace.completed, 1U);
+    EXPECT_EQ(trace.successful, 1U);
+}
+
+TEST(GatewayExchange, ShutdownFailsFullQueuedControlsWithoutExecutingThem) {
+    ControlRaceTrace trace;
+    trace.hold_dispatch = true;
+    TransportOptions options;
+    options.trace = {ControlRaceTrace::record, &trace};
+    Gateway server{0, 16, 5s, options};
+    auto client = std::make_unique<Client>(server.port());
+    Frame reply;
+    ASSERT_TRUE(client->exchange(message(MessageType::Hello), reply));
+    const auto session = field(reply, 0);
+    ASSERT_TRUE(client->send(order(1, 1, 1, 0, 0, 100, 1)));
+    {
+        std::unique_lock lock(trace.mutex);
+        ASSERT_TRUE(trace.changed.wait_for(lock, 3s, [&] { return trace.blocked; }));
+    }
+    std::array<int, 32> results{};
+    results.fill(-1);
+    std::vector<std::jthread> workers;
+    workers.reserve(results.size());
+    for (std::size_t i = 0; i < results.size(); ++i)
+        workers.emplace_back([&, i] { results[i] = server.set_killed(session, true, 4s) ? 1 : 0; });
+    bool all_queued;
+    {
+        std::unique_lock lock(trace.mutex);
+        all_queued =
+            trace.changed.wait_for(lock, 3s, [&] { return trace.queued == results.size(); });
+    }
+    EXPECT_TRUE(all_queued);
+    if (all_queued) {
+        EXPECT_FALSE(server.set_killed(session, true, 100ms)); // queue is full
+    }
+    client.reset(); // disconnected while controls remain pending
+    std::jthread stopper([&] { server.stop(); });
+    std::jthread second_stopper([&] { server.stop(); });
+    bool stop_seen;
+    {
+        std::unique_lock lock(trace.mutex);
+        stop_seen = trace.changed.wait_for(lock, 3s, [&] { return trace.stop_requested; });
+        trace.release = true;
+        trace.changed.notify_all();
+    }
+    EXPECT_TRUE(stop_seen);
+    stopper.join();
+    second_stopper.join();
+    for (auto &worker : workers)
+        worker.join();
+    EXPECT_FALSE(server.running());
+    for (const auto result : results)
+        EXPECT_EQ(result, 0);
+    const auto pending = server.pending_report(session);
+    ASSERT_TRUE(pending);
+    const auto sequence = pending->sequence;
+    EXPECT_FALSE(server.set_killed(session, false, 100ms));
+    server.stop();
+    ASSERT_TRUE(server.pending_report(session));
+    EXPECT_EQ(server.pending_report(session)->sequence, sequence);
+    std::lock_guard lock(trace.mutex);
+    EXPECT_FALSE(trace.gate_timeout);
+    EXPECT_EQ(trace.queued, results.size());
+    EXPECT_EQ(trace.started, 0U);
+    EXPECT_EQ(trace.completed, results.size());
+    EXPECT_EQ(trace.successful, 0U);
+}
+
+TEST(GatewayExchange, ShutdownRejectsDetachedControlBeforeItStarts) {
+    ControlRaceTrace trace;
+    trace.hold_batch = true;
+    TransportOptions options;
+    options.trace = {ControlRaceTrace::record, &trace};
+    Gateway server{0, 16, 5s, options};
+    Client client{server.port()};
+    Frame reply;
+    ASSERT_TRUE(client.exchange(message(MessageType::Hello), reply));
+    const auto session = field(reply, 0);
+    bool result = true;
+    std::jthread worker([&] { result = server.set_killed(session, true, 4s); });
+    bool batch_seen;
+    {
+        std::unique_lock lock(trace.mutex);
+        batch_seen = trace.changed.wait_for(lock, 3s, [&] { return trace.batch_blocked; });
+    }
+    EXPECT_TRUE(batch_seen);
+    std::jthread stopper([&] { server.stop(); });
+    bool stop_seen;
+    {
+        std::unique_lock lock(trace.mutex);
+        stop_seen = trace.changed.wait_for(lock, 3s, [&] { return trace.stop_requested; });
+        trace.release_batch = true;
+        trace.changed.notify_all();
+    }
+    EXPECT_TRUE(stop_seen);
+    stopper.join();
+    worker.join();
+    EXPECT_FALSE(result);
+    EXPECT_FALSE(server.running());
+    EXPECT_FALSE(server.set_killed(session, false, 100ms));
+    std::lock_guard lock(trace.mutex);
+    EXPECT_FALSE(trace.gate_timeout);
+    EXPECT_EQ(trace.queued, 1U);
+    EXPECT_EQ(trace.started, 0U);
+    EXPECT_EQ(trace.completed, 1U);
+    EXPECT_EQ(trace.successful, 0U);
 }

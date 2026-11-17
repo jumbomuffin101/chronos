@@ -25,7 +25,12 @@ enum class TracePoint {
     TransactionEnd,
     ReportQueued,
     SocketWrite,
-    ClientReceived
+    ClientReceived,
+    ControlQueued,
+    ControlBatchTaken,
+    ControlStarted,
+    ControlCompleted,
+    StopRequested
 };
 struct TraceEvent {
     TracePoint point;
@@ -34,8 +39,8 @@ struct TraceEvent {
     std::uint64_t request_id;
     std::uint8_t value;
 };
-// Callback must be nonblocking, noexcept and safe for concurrent client and
-// gateway threads. The caller owns the context for the lifetime of both.
+// Callback must be nonblocking, noexcept and safe for concurrent client,
+// control, stop and gateway threads. The caller owns the context throughout.
 struct TraceSink {
     void (*record)(void *, const TraceEvent &) noexcept = nullptr;
     void *context = nullptr;
