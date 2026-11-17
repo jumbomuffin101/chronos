@@ -76,6 +76,8 @@ class MatchingEngine {
     [[nodiscard]] std::vector<orderbook::OrderSnapshot> orders_at(core::Side side,
                                                                   core::Price price) const;
     [[nodiscard]] Counters counters() const noexcept { return counters_; }
+    [[nodiscard]] std::uint64_t book_revision() const noexcept { return book_->revision_; }
+    [[nodiscard]] TransactionMode transaction_mode() const noexcept { return mode_; }
     // Read-only book shape for bounded inspection; does not allocate.
     [[nodiscard]] std::size_t resting_order_count() const noexcept { return book_->order_count(); }
     [[nodiscard]] std::size_t price_level_count(core::Side side) const noexcept {

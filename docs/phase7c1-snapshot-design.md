@@ -1,5 +1,9 @@
 # Phase 7C.1: verification checkpoint and restoration gap
 
+Update: a separate, restricted history-backed restorer now exists for completed
+isolated simulations; it does not change `CHROVIEW` or provide publication.
+See [the 7C.1B design](phase7c1b-restoration-design.md).
+
 **Status: incomplete.** This change provides a bounded on-disk diagnostic
 checkpoint, not a restorable exchange snapshot. It cannot be used for crash
 recovery, event-log suffix replay, or restarting a live exchange.

@@ -123,9 +123,14 @@ class Exchange {
     // unbounded output or ID-normalization table. Not a restoration format.
     [[nodiscard]] std::vector<std::uint64_t>
     verification_state_bounded(std::size_t max_words) const;
+    // Exact IDs and continuation metadata, only for owner-thread isolated
+    // exchanges. This is not a live exchange import or publication interface.
+    [[nodiscard]] std::vector<std::uint64_t>
+    isolated_continuation_state(std::size_t max_words) const;
 
   private:
     struct IsolatedTag {};
+    [[nodiscard]] std::vector<std::uint64_t> state_words(std::size_t max_words, bool exact) const;
     Exchange(IsolatedTag, std::size_t sessions, std::size_t orders, std::size_t reports,
              std::size_t requests, std::uint64_t initial_feed_sequence, std::uint64_t last_id);
     struct State;

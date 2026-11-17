@@ -44,4 +44,9 @@ enum class ReplayAllocation { Isolated, SharedProcess };
 // SharedProcess is explicit compatibility behavior and consumes process IDs.
 [[nodiscard]] ReplayResult verify(std::istream &stream,
                                   ReplayAllocation allocation = ReplayAllocation::Isolated);
+// Reconstruct a private exchange only from a fully verified, complete log.
+// Destination must be empty and is unchanged on failure; this does not publish
+// it to a gateway or replace an existing exchange.
+[[nodiscard]] ReplayResult reconstruct_isolated(std::istream &stream,
+                                                std::unique_ptr<exchange::Exchange> &destination);
 } // namespace chronos::eventlog

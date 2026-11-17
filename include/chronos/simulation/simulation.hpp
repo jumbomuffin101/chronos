@@ -112,7 +112,8 @@ class SimulationObserver {
 class SimulationRunner {
   public:
     static constexpr std::uint32_t generator_version = 2;
-    explicit SimulationRunner(ScenarioConfig config, SimulationObserver *observer = nullptr);
+    explicit SimulationRunner(ScenarioConfig config, SimulationObserver *observer = nullptr,
+                              bool isolated_exchange = false);
     ~SimulationRunner();
     SimulationRunner(const SimulationRunner &) = delete;
     SimulationRunner &operator=(const SimulationRunner &) = delete;
@@ -121,6 +122,10 @@ class SimulationRunner {
     void run_batch(std::size_t maximum);
     void request_stop();
     [[nodiscard]] const SimulationResult &result() const noexcept { return result_; }
+    // Borrowed pointer, invalidated by runner destruction. Only available for
+    // a completed isolated run. The caller must serialize access and cannot
+    // attach it to a gateway through this API.
+    [[nodiscard]] exchange::Exchange *completed_isolated_exchange() noexcept;
     [[nodiscard]] static std::string validate(const ScenarioConfig &config);
 
   private:

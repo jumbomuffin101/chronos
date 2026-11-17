@@ -333,7 +333,8 @@ bool EventRecorder::finish(const simulation::SimulationResult &r, simulation::Li
     }
 }
 
-ReplayResult verify(std::istream &in, ReplayAllocation allocation) {
+static ReplayResult verify_impl(std::istream &in, ReplayAllocation allocation,
+                                std::unique_ptr<exchange::Exchange> *destination) {
     ReplayResult result;
     std::vector<Record> records;
     std::uint64_t offset = 0;
@@ -503,6 +504,8 @@ ReplayResult verify(std::istream &in, ReplayAllocation allocation) {
         result.accepted = accepted_orders + cancelled;
         result.rejected = rejected_orders + rejected_cancels;
         result.trades = exchange->trade_count();
+        if (destination)
+            *destination = std::move(exchange);
         result.verified = true;
         result.offset = 0;
         result.sequence = 0;
@@ -518,5 +521,17 @@ ReplayResult verify(std::istream &in, ReplayAllocation allocation) {
         }
     }
     return result;
+}
+ReplayResult verify(std::istream &in, ReplayAllocation allocation) {
+    return verify_impl(in, allocation, nullptr);
+}
+ReplayResult reconstruct_isolated(std::istream &in,
+                                  std::unique_ptr<exchange::Exchange> &destination) {
+    if (destination) {
+        ReplayResult result;
+        result.error = "destination must be empty";
+        return result;
+    }
+    return verify_impl(in, ReplayAllocation::Isolated, &destination);
 }
 } // namespace chronos::eventlog

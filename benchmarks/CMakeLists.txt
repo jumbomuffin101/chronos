@@ -21,3 +21,7 @@ chronos_configure_target(chronos_checkpoint_bench)
 add_executable(chronos_id_allocator_bench id_allocator_bench.cpp)
 target_link_libraries(chronos_id_allocator_bench PRIVATE chronos_core benchmark::benchmark)
 chronos_configure_target(chronos_id_allocator_bench)
+
+add_executable(chronos_restorable_bench restorable_bench.cpp)
+target_link_libraries(chronos_restorable_bench PRIVATE chronos_core benchmark::benchmark)
+chronos_configure_target(chronos_restorable_bench)

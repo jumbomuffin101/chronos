@@ -4,6 +4,7 @@
 #include "chronos/orderbook/order_book.hpp"
 #include "chronos/simulation/simulation.hpp"
 #include "chronos/snapshot/checkpoint.hpp"
+#include "chronos/snapshot/restorable.hpp"
 
 #include <cstdlib>
 #include <gtest/gtest.h>
@@ -208,6 +209,50 @@ TEST(CheckpointAllocation, FailedCaptureDoesNotChangeExchange) {
     allocations_until_failure = -1;
     EXPECT_TRUE(threw);
     EXPECT_EQ(book.verification_state(), original);
+}
+TEST(RestorableAllocation, FailureDoesNotPublishOrChangeSource) {
+    using namespace chronos;
+    simulation::ScenarioConfig c;
+    c.max_commands = 1;
+    std::ostringstream log(std::ios::binary);
+    eventlog::EventRecorder recorder(log);
+    simulation::SimulationRunner runner(c, &recorder, true);
+    runner.start();
+    runner.run_batch(1);
+    auto *source = runner.completed_isolated_exchange();
+    ASSERT_NE(source, nullptr);
+    const auto state = source->isolated_continuation_state(1024 * 1024);
+    std::ostringstream image(std::ios::binary);
+    ASSERT_TRUE(snapshot::write_image(image, log.str(), *source, 1).ok);
+    const auto bytes = image.str();
+    std::istringstream input(bytes, std::ios::binary);
+    std::unique_ptr<exchange::Exchange> candidate;
+    allocations_until_failure = 0;
+    const auto result = snapshot::restore_image(input, candidate);
+    allocations_until_failure = -1;
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.allocation_failure);
+    EXPECT_FALSE(candidate);
+    EXPECT_EQ(source->isolated_continuation_state(1024 * 1024), state);
+    int failures = 0;
+    bool completed = false;
+    for (int fail_at = 0; fail_at < 512 && !completed; ++fail_at) {
+        std::istringstream retry(bytes, std::ios::binary);
+        std::unique_ptr<exchange::Exchange> retry_candidate;
+        allocations_until_failure = fail_at;
+        const auto attempt = snapshot::restore_image(retry, retry_candidate);
+        allocations_until_failure = -1;
+        if (attempt.ok) {
+            EXPECT_TRUE(retry_candidate);
+            completed = true;
+        } else {
+            EXPECT_FALSE(retry_candidate);
+            ++failures;
+        }
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GT(failures, 10);
+    EXPECT_EQ(source->isolated_continuation_state(1024 * 1024), state);
 }
 
 TEST(ExchangeAllocation, StagedFillLeavesLiveStateUntouchedOnAllocationFailure) {

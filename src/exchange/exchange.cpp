@@ -537,6 +537,14 @@ std::vector<std::uint64_t> Exchange::verification_state() const {
     return verification_state_bounded(std::numeric_limits<std::size_t>::max());
 }
 std::vector<std::uint64_t> Exchange::verification_state_bounded(std::size_t max_words) const {
+    return state_words(max_words, false);
+}
+std::vector<std::uint64_t> Exchange::isolated_continuation_state(std::size_t max_words) const {
+    if (!isolated_)
+        throw std::logic_error("continuation capture requires an isolated exchange");
+    return state_words(max_words, true);
+}
+std::vector<std::uint64_t> Exchange::state_words(std::size_t max_words, bool exact) const {
     // Exact no-allocation shape preflight before allocating output or
     // normalization nodes. All arithmetic is checked against the caller's cap.
     std::size_t minimum = 0;
@@ -547,6 +555,11 @@ std::vector<std::uint64_t> Exchange::verification_state_bounded(std::size_t max_
     };
     charge(1, 9); // top-level words and collection lengths
     charge(state_->orders.size(), 5);
+    if (exact) {
+        charge(state_->orders.size(), 1);
+        charge(1, 6); // exact metadata version, capacities and allocator high-water
+        charge(state_->engines.size(), 3); // symbol, revision and transaction mode
+    }
     charge(state_->trades.size(), 9);
     charge(state_->feed_sequences.size(), 2);
     charge(state_->engines.size(), 6); // symbol/counters and two side lengths
@@ -583,10 +596,17 @@ std::vector<std::uint64_t> Exchange::verification_state_bounded(std::size_t max_
     // Preserve identity relationships while allowing process-wide IDs to differ
     // between recording and replay. Duplicate or zero IDs are not normalizable.
     std::map<std::uint64_t, std::uint64_t> labels;
+    std::vector<bool> seen;
+    if (exact)
+        seen.resize(state_->orders.size());
     for (std::size_t i = 0; i < state_->orders.size(); ++i) {
-        const auto id = state_->orders[i].internal;
+        const auto &entry = state_->orders[i];
+        const auto id = entry.internal;
         if (id == 0 || !labels.emplace(id, static_cast<std::uint64_t>(i) + 1).second)
             throw std::logic_error("invalid or duplicate internal order ID");
+        if (exact &&
+            (!state_->sessions.contains(entry.session) || id > private_allocator_.private_last()))
+            throw std::logic_error("invalid order owner or allocator high-water");
     }
     const auto label = [&](std::uint64_t id) -> std::uint64_t {
         if (id == 0)
@@ -594,7 +614,7 @@ std::vector<std::uint64_t> Exchange::verification_state_bounded(std::size_t max_
         const auto it = labels.find(id);
         if (it == labels.end())
             throw std::logic_error("unknown internal order ID");
-        return it->second;
+        return exact ? id : it->second;
     };
     add(1);
     add(state_->command);
@@ -661,6 +681,8 @@ std::vector<std::uint64_t> Exchange::verification_state_bounded(std::size_t max_
     }
     add(state_->orders.size());
     for (const auto &order : state_->orders) {
+        if (exact)
+            add(order.internal);
         add(order.session);
         add(order.client);
         add(order.request);
@@ -703,14 +725,56 @@ std::vector<std::uint64_t> Exchange::verification_state_bounded(std::size_t max_
                 if (level.order_count > (max_words - out.size()) / 3)
                     throw std::length_error("verification orders exceed word limit");
                 const auto orders = engine->orders_at(side, level.price);
+                if (exact && orders.size() != level.order_count)
+                    throw std::logic_error("invalid level order count");
                 add(orders.size());
+                core::Quantity total = 0;
                 for (const auto &order : orders) {
+                    if (exact) {
+                        const auto owner = labels.find(order.id.value());
+                        if (owner == labels.end())
+                            throw std::logic_error("book order missing from ownership history");
+                        const auto index = static_cast<std::size_t>(owner->second - 1);
+                        const auto &entry = state_->orders[index];
+                        const auto indexed = engine->find(order.id);
+                        if (seen[index] || !entry.open || entry.symbol != symbol || !indexed ||
+                            indexed->id != order.id || indexed->symbol != order.symbol ||
+                            indexed->side != side || indexed->price != level.price ||
+                            indexed->quantity != order.quantity ||
+                            indexed->sequence != order.sequence || order.symbol.value() != symbol ||
+                            order.side != side || order.price != level.price ||
+                            order.quantity == 0 ||
+                            order.quantity > std::numeric_limits<core::Quantity>::max() - total)
+                            throw std::logic_error("book ownership or lookup index mismatch");
+                        seen[index] = true;
+                        total += order.quantity;
+                    }
                     add(label(order.id.value()));
                     add(order.quantity);
                     add(order.sequence);
                 }
+                if (exact && total != level.quantity)
+                    throw std::logic_error("book aggregate mismatch");
             }
         }
+    }
+    if (exact) {
+        for (std::size_t i = 0; i < state_->orders.size(); ++i)
+            if (state_->orders[i].open != seen[i])
+                throw std::logic_error("open order missing from book");
+        add(1);
+        add(max_sessions_);
+        add(max_orders_);
+        add(max_reports_);
+        add(max_requests_);
+        add(private_allocator_.private_last());
+        for (const auto &[symbol, engine] : state_->engines) {
+            add(symbol);
+            add(engine->book_revision());
+            add(static_cast<std::uint64_t>(engine->transaction_mode()));
+        }
+        if (out.size() != minimum)
+            throw std::logic_error("book shape or index count mismatch");
     }
     return out;
 }

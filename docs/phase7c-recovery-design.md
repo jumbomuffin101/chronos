@@ -1,5 +1,9 @@
 # Phase 7C recovery architecture
 
+7C.1B now includes a restricted, history-backed private candidate restorer for
+completed isolated simulations. It does not publish a live exchange or supply
+crash recovery; see [the restoration design](phase7c1b-restoration-design.md).
+
 Implementation finding: the current 7C.1 work provides only a diagnostic
 observation checkpoint, not snapshot restoration. The process-wide ID allocator,
 order-book revision state and other continuation fields need an explicit design

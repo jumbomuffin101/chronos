@@ -47,6 +47,7 @@ struct SimulationRunner::Impl {
     std::uint64_t h = offset;
     std::size_t seen_trades = 0;
     SimulationObserver *observer = nullptr;
+    bool isolated_exchange = false;
 };
 
 const char *scenario_name(Scenario s) noexcept {
@@ -98,9 +99,11 @@ std::string SimulationRunner::validate(const ScenarioConfig &c) {
     return {};
 }
 
-SimulationRunner::SimulationRunner(ScenarioConfig c, SimulationObserver *observer)
+SimulationRunner::SimulationRunner(ScenarioConfig c, SimulationObserver *observer,
+                                   bool isolated_exchange)
     : impl_(std::make_unique<Impl>()) {
     impl_->observer = observer;
+    impl_->isolated_exchange = isolated_exchange;
     result_.config = std::move(c);
 }
 SimulationRunner::~SimulationRunner() = default;
@@ -185,9 +188,13 @@ void SimulationRunner::start() {
         impl_->active.reserve(c.max_commands);
         impl_->participants.reserve(c.participants);
         impl_->reports.reserve(2 * c.max_commands + 2);
-        impl_->exchange = std::make_unique<exchange::Exchange>(c.participants, c.max_order_history,
-                                                               2 * c.max_commands + 2,
-                                                               c.max_requests_per_session);
+        impl_->exchange =
+            impl_->isolated_exchange
+                ? exchange::Exchange::isolated(c.participants, c.max_order_history,
+                                               2 * c.max_commands + 2, c.max_requests_per_session)
+                : std::make_unique<exchange::Exchange>(c.participants, c.max_order_history,
+                                                       2 * c.max_commands + 2,
+                                                       c.max_requests_per_session);
         for (std::size_t i = 0; i < c.participants; ++i) {
             const auto id = static_cast<std::uint64_t>(i + 1);
             if (!impl_->exchange->open_session(id) || !impl_->exchange->configure_risk(id, c.risk))
@@ -367,5 +374,10 @@ void SimulationRunner::request_stop() {
     } catch (...) {
         fail(result_.status, "non-standard exception");
     }
+}
+exchange::Exchange *SimulationRunner::completed_isolated_exchange() noexcept {
+    return result_.status.state == Lifecycle::Completed && impl_->isolated_exchange
+               ? impl_->exchange.get()
+               : nullptr;
 }
 } // namespace chronos::simulation

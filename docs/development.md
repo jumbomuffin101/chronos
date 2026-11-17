@@ -1,8 +1,13 @@
 # Development
 
-The Phase 7C.1 `chronos::snapshot` module currently supplies a diagnostic
-checkpoint and comparison API, not exchange restoration. Its format and
-limitations are documented in `phase7c1-snapshot-design.md`.
+The Phase 7C.1 `CHROVIEW` diagnostic checkpoint and comparison API does not
+restore an exchange. Its format and limitations are documented in
+`phase7c1-snapshot-design.md`.
+
+After building, `build/release/chronos_snapshot_demo --image /tmp/chronos.chrostate`
+demonstrates the separate history-backed isolated restoration path. Use a new
+filename. This is not durable recovery or live exchange publication; see
+`phase7c1b-restoration-design.md` for its restrictions.
 
 For Phase 7B, build with `cmake --build --preset release`, then run
 `build/release/chronos_sim --scenario balanced --seed 42 --commands 100 --record session.chronos`

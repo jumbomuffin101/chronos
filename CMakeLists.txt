@@ -8,7 +8,7 @@ option(CHRONOS_ENABLE_SANITIZERS "Enable address and undefined behavior sanitize
 option(CHRONOS_ENABLE_BENCHMARKS "Fetch Google Benchmark for future benchmarks" OFF)
 option(CHRONOS_ENABLE_EXCHANGE_BASELINE "Build the Linux exchange-layer baseline" OFF)
 
-add_library(chronos_core src/orderbook/order_book.cpp src/matching/matching_engine.cpp src/exchange/exchange.cpp src/simulation/simulation.cpp src/eventlog/event_log.cpp src/snapshot/checkpoint.cpp)
+add_library(chronos_core src/orderbook/order_book.cpp src/matching/matching_engine.cpp src/exchange/exchange.cpp src/simulation/simulation.cpp src/eventlog/event_log.cpp src/snapshot/checkpoint.cpp src/snapshot/restorable.cpp)
 target_compile_features(chronos_core PUBLIC cxx_std_20)
 target_include_directories(chronos_core PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 
@@ -40,6 +40,10 @@ chronos_configure_target(chronos_sim)
 add_executable(chronos_replay apps/replay/main.cpp)
 target_link_libraries(chronos_replay PRIVATE chronos_core)
 chronos_configure_target(chronos_replay)
+
+add_executable(chronos_snapshot_demo apps/snapshot_demo/main.cpp)
+target_link_libraries(chronos_snapshot_demo PRIVATE chronos_core)
+chronos_configure_target(chronos_snapshot_demo)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(Threads REQUIRED)

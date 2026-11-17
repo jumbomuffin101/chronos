@@ -4,6 +4,9 @@
 #include <limits>
 #include <mutex>
 
+namespace chronos::exchange {
+class Exchange;
+}
 namespace chronos::exchange::detail {
 // A reservation keeps its lock until the enclosing transaction is complete.
 // Unsynchronized instances are owner-thread-only and must never be shared.
@@ -38,6 +41,9 @@ class OrderIdAllocator {
     };
 
   private:
+    friend class ::chronos::exchange::Exchange;
+    // Exchange calls this only for its owned, unsynchronized private context.
+    [[nodiscard]] std::uint64_t private_last() const noexcept { return last_; }
     std::mutex mutex_;
     std::uint64_t last_;
     bool synchronized_;
