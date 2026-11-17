@@ -1,5 +1,6 @@
 #include "chronos/eventlog/event_log.hpp"
 #include "chronos/exchange/exchange.hpp"
+#include "chronos/exchange/live_owner.hpp"
 #include "chronos/matching/matching_engine.hpp"
 #include "chronos/orderbook/order_book.hpp"
 #include "chronos/simulation/simulation.hpp"
@@ -7,17 +8,30 @@
 #include "chronos/snapshot/restorable.hpp"
 
 #include <cstdlib>
+#include <future>
 #include <gtest/gtest.h>
+#include <latch>
 #include <new>
 #include <sstream>
+#include <thread>
 
 // Confined to this test executable. The counter is armed only during the operation
 // under test, so GoogleTest's own allocations do not consume the failure point.
 namespace {
 thread_local int allocations_until_failure = -1;
-}
+thread_local std::latch *pause_allocation_entered = nullptr;
+thread_local std::latch *pause_allocation_release = nullptr;
+} // namespace
 
 void *operator new(std::size_t size) {
+    if (pause_allocation_entered) {
+        auto *entered = pause_allocation_entered;
+        auto *release = pause_allocation_release;
+        pause_allocation_entered = nullptr;
+        pause_allocation_release = nullptr;
+        entered->count_down();
+        release->wait();
+    }
     if (allocations_until_failure == 0) {
         throw std::bad_alloc{};
     }
@@ -52,6 +66,133 @@ void operator delete(void *p, const std::nothrow_t &) noexcept { ::operator dele
 
 using namespace chronos::core;
 using namespace chronos::orderbook;
+
+TEST(AllocationRegistrationFailure, ConstructorAndBindReleaseExclusiveLease) {
+    using namespace chronos::exchange;
+    { Exchange initialize_registry; }
+    bool constructor_failed = false;
+    allocations_until_failure = 0;
+    try {
+        LiveExchangeOwner owner(16, 1024, 128, 1024, AllocationMode::Exclusive);
+    } catch (const std::bad_alloc &) {
+        constructor_failed = true;
+    } catch (...) {
+        allocations_until_failure = -1;
+        throw;
+    }
+    allocations_until_failure = -1;
+    ASSERT_TRUE(constructor_failed);
+    { Exchange shared; }
+    LiveExchangeOwner owner(16, 1024, 128, 1024, AllocationMode::Exclusive);
+    bool bind_failed = false;
+    allocations_until_failure = 0;
+    try {
+        owner.bind();
+    } catch (const std::bad_alloc &) {
+        bind_failed = true;
+    } catch (...) {
+        allocations_until_failure = -1;
+        throw;
+    }
+    allocations_until_failure = -1;
+    ASSERT_TRUE(bind_failed);
+    EXPECT_NO_THROW(static_cast<void>(Exchange{}));
+}
+
+TEST(AllocationRegistrationFailure, ConflictExceptionAllocationLeavesRegistryUsable) {
+    using namespace chronos::exchange;
+    {
+        LiveExchangeOwner owner(16, 1024, 128, 1024, AllocationMode::Exclusive);
+        bool rejected = false;
+        allocations_until_failure = 0;
+        try {
+            Exchange shared;
+        } catch (const std::bad_alloc &) {
+            rejected = true;
+        } catch (const std::runtime_error &) {
+            rejected = true;
+        } catch (...) {
+            allocations_until_failure = -1;
+            throw;
+        }
+        allocations_until_failure = -1;
+        EXPECT_TRUE(rejected);
+        EXPECT_THROW(static_cast<void>(Exchange{}), std::runtime_error);
+    }
+    EXPECT_NO_THROW(static_cast<void>(Exchange{}));
+}
+
+TEST(AllocationRegistrationFailure, ExclusiveAttemptDoesNotWaitForOutstandingSharedReservation) {
+    using namespace chronos;
+    exchange::Exchange shared;
+    ASSERT_TRUE(shared.open_session(1));
+    std::latch entered(1), release(1);
+    auto submission = exchange::Result::InvalidOrder;
+    std::thread submitter([&] {
+        pause_allocation_entered = &entered;
+        pause_allocation_release = &release;
+        submission = shared.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy,
+                                   core::OrderType::Limit, 100, 1);
+    });
+    entered.wait(); // First clone allocation occurs after the process ID reservation.
+    std::promise<bool> attempt;
+    auto result = attempt.get_future();
+    std::thread competitor([&] {
+        try {
+            exchange::LiveExchangeOwner owner(16, 1024, 128, 1024,
+                                              exchange::AllocationMode::Exclusive);
+            attempt.set_value(false);
+        } catch (const std::runtime_error &) {
+            attempt.set_value(true);
+        }
+    });
+    const auto status = result.wait_for(std::chrono::seconds(2));
+    release.count_down(); // Also releases a broken implementation before joining.
+    competitor.join();
+    submitter.join();
+    EXPECT_EQ(status, std::future_status::ready);
+    EXPECT_TRUE(result.get());
+    EXPECT_EQ(submission, exchange::Result::Accepted);
+    EXPECT_TRUE(shared.front(1));
+}
+
+TEST(AllocationRegistrationFailure, SharedAttemptCannotBypassOutstandingExclusiveReservation) {
+    using namespace chronos;
+    exchange::LiveExchangeOwner owner(16, 1024, 128, 1024, exchange::AllocationMode::Exclusive);
+    std::latch entered(1), release(1);
+    auto submission = exchange::Result::InvalidOrder;
+    bool opened = false, finished = false;
+    std::thread submitter([&] {
+        owner.bind();
+        opened = owner.open_session(1);
+        pause_allocation_entered = &entered;
+        pause_allocation_release = &release;
+        submission = owner.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy,
+                                  core::OrderType::Limit, 100, 1);
+        finished = owner.finish();
+    });
+    entered.wait();
+    std::promise<bool> attempt;
+    auto result = attempt.get_future();
+    std::thread competitor([&] {
+        try {
+            exchange::Exchange shared;
+            attempt.set_value(false);
+        } catch (const std::runtime_error &) {
+            attempt.set_value(true);
+        }
+    });
+    const auto status = result.wait_for(std::chrono::seconds(2));
+    release.count_down();
+    competitor.join();
+    submitter.join();
+    EXPECT_EQ(status, std::future_status::ready);
+    EXPECT_TRUE(result.get());
+    EXPECT_TRUE(opened);
+    EXPECT_EQ(submission, exchange::Result::Accepted);
+    EXPECT_TRUE(finished);
+    EXPECT_NO_THROW(static_cast<void>(exchange::Exchange{}));
+}
 
 namespace {
 Order make_order(std::uint64_t id, Price price, Quantity quantity) {

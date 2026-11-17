@@ -33,3 +33,7 @@ chronos_configure_target(chronos_offline_owner_bench)
 add_executable(chronos_live_owner_bench live_owner_bench.cpp)
 target_link_libraries(chronos_live_owner_bench PRIVATE chronos_core benchmark::benchmark)
 chronos_configure_target(chronos_live_owner_bench)
+
+add_executable(chronos_allocation_registration_bench allocation_registration_bench.cpp)
+target_link_libraries(chronos_allocation_registration_bench PRIVATE chronos_core benchmark::benchmark)
+chronos_configure_target(chronos_allocation_registration_bench)

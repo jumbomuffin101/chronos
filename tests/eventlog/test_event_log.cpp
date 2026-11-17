@@ -1,4 +1,5 @@
 #include "chronos/eventlog/event_log.hpp"
+#include "chronos/exchange/live_owner.hpp"
 #include <algorithm>
 #include <charconv>
 #include <fstream>
@@ -294,6 +295,32 @@ TEST(EventLog, ValidReplayConsumesTheSharedProcessOrderIdAllocator) {
     ASSERT_TRUE(eventlog::verify(in, eventlog::ReplayAllocation::SharedProcess).verified);
     const auto after = issue();
     EXPECT_EQ(after, before + 2);
+}
+TEST(EventLog, ExclusiveOwnerAllowsIsolatedReplayButRejectsSharedReplay) {
+    simulation::ScenarioConfig config;
+    config.max_commands = 1;
+    const auto log = recording(config);
+    exchange::LiveExchangeOwner owner(16, 1024, 128, 1024, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    ASSERT_TRUE(owner.open_session(1));
+    ASSERT_EQ(
+        owner.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit, 100, 1),
+        exchange::Result::Accepted);
+    ASSERT_TRUE(owner.front(1));
+    const auto before = owner.front(1)->internal_order_id;
+    EXPECT_TRUE(replay(log).verified);
+    std::istringstream shared(log, std::ios::binary);
+    const auto rejected = eventlog::verify(shared, eventlog::ReplayAllocation::SharedProcess);
+    EXPECT_FALSE(rejected.verified);
+    EXPECT_NE(rejected.error.find("shared allocation registration unavailable"), std::string::npos);
+    ASSERT_EQ(
+        owner.submit(1, 2, 2, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit, 99, 1),
+        exchange::Result::Accepted);
+    owner.pop(1);
+    owner.pop(1);
+    ASSERT_TRUE(owner.front(1));
+    EXPECT_EQ(owner.front(1)->internal_order_id, before + 1);
+    EXPECT_TRUE(owner.finish());
 }
 TEST(EventLog, DefaultReplayDoesNotConsumeSharedProcessOrderIds) {
     simulation::ScenarioConfig config;

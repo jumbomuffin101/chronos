@@ -1,5 +1,6 @@
 #pragma once
 
+#include "chronos/exchange/allocation_registry.hpp"
 #include "chronos/exchange/order_id_allocator.hpp"
 #include "chronos/matching/matching_engine.hpp"
 
@@ -11,6 +12,7 @@
 #include <vector>
 
 namespace chronos::exchange {
+class LiveExchangeOwner;
 
 // Prototype owner-thread API. All calls, including reads, must be serialized.
 enum class Result {
@@ -129,15 +131,23 @@ class Exchange {
     isolated_continuation_state(std::size_t max_words) const;
 
   private:
+    friend class LiveExchangeOwner;
     struct IsolatedTag {};
+    struct LiveTag {};
     [[nodiscard]] std::vector<std::uint64_t> state_words(std::size_t max_words, bool exact) const;
     Exchange(IsolatedTag, std::size_t sessions, std::size_t orders, std::size_t reports,
              std::size_t requests, std::uint64_t initial_feed_sequence, std::uint64_t last_id);
+    Exchange(LiveTag, std::size_t sessions, std::size_t orders, std::size_t reports,
+             std::size_t requests, std::uint64_t initial_feed_sequence, AllocationMode mode);
+    void release_exclusive_registration() noexcept;
     struct State;
+    // Shared leases outlive state_; an exclusive owner may release at terminal stop.
+    detail::AllocationRegistry::Lease registration_;
     std::unique_ptr<State> state_;
     std::size_t max_sessions_, max_orders_, max_reports_, max_requests_;
     detail::OrderIdAllocator private_allocator_{false};
     detail::OrderIdAllocator *allocator_;
     bool isolated_ = false;
+    bool exclusive_ = false;
 };
 } // namespace chronos::exchange

@@ -145,9 +145,11 @@ class Gateway::Impl {
 
   public:
     Impl(std::uint16_t port, std::size_t maximum, std::chrono::milliseconds idle,
-         TransportOptions options, exchange::RiskLimits default_risk)
+         TransportOptions options, exchange::RiskLimits default_risk,
+         exchange::AllocationMode allocation)
         : listener_(::socket(AF_INET, SOCK_STREAM, 0)), maximum_(maximum), idle_(idle),
-          exchange_(maximum), options_(options), default_risk_(std::move(default_risk)) {
+          exchange_(maximum, 1024, 128, 1024, allocation), options_(options),
+          default_risk_(std::move(default_risk)) {
         if (listener_.get() < 0 || maximum == 0 || maximum > 1024 || idle.count() <= 0 ||
             default_risk_.max_market_price <= 0 || default_risk_.allowed_symbols.size() > 1024 ||
             default_risk_.max_abs_position >
@@ -606,8 +608,10 @@ class Gateway::Impl {
     std::jthread thread_;
 };
 Gateway::Gateway(std::uint16_t port, std::size_t max_sessions, std::chrono::milliseconds idle,
-                 TransportOptions options, exchange::RiskLimits default_risk)
-    : impl_(std::make_unique<Impl>(port, max_sessions, idle, options, std::move(default_risk))) {}
+                 TransportOptions options, exchange::RiskLimits default_risk,
+                 exchange::AllocationMode allocation)
+    : impl_(std::make_unique<Impl>(port, max_sessions, idle, options, std::move(default_risk),
+                                   allocation)) {}
 Gateway::~Gateway() = default;
 std::uint16_t Gateway::port() const noexcept { return impl_->port(); }
 bool Gateway::running() const noexcept { return impl_->running(); }

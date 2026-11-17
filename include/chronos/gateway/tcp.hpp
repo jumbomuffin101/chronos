@@ -76,7 +76,8 @@ class Gateway {
   public:
     explicit Gateway(std::uint16_t port = 0, std::size_t max_sessions = 16,
                      std::chrono::milliseconds idle_timeout = std::chrono::seconds(5),
-                     TransportOptions options = {}, exchange::RiskLimits default_risk = {});
+                     TransportOptions options = {}, exchange::RiskLimits default_risk = {},
+                     exchange::AllocationMode allocation = exchange::AllocationMode::Shared);
     ~Gateway();
     Gateway(const Gateway &) = delete;
     Gateway &operator=(const Gateway &) = delete;

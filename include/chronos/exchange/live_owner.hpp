@@ -14,7 +14,7 @@ namespace chronos::exchange {
 // context; no mutable exchange reference or transfer operation is exposed.
 class LiveExchangeOwner final {
     struct Context {};
-    enum class Phase { Unbound, Binding, Active, Stopped };
+    enum class Phase { Unbound, Binding, Active, Finishing, Stopped };
     static const std::shared_ptr<const Context> &current_context() {
         static thread_local const auto context = std::make_shared<const Context>();
         return context;
@@ -22,8 +22,9 @@ class LiveExchangeOwner final {
 
   public:
     explicit LiveExchangeOwner(std::size_t sessions = 16, std::size_t orders = 1024,
-                               std::size_t reports = 128, std::size_t requests = 1024)
-        : exchange_(sessions, orders, reports, requests) {}
+                               std::size_t reports = 128, std::size_t requests = 1024,
+                               AllocationMode mode = AllocationMode::Shared)
+        : exchange_(Exchange::LiveTag{}, sessions, orders, reports, requests, 0, mode) {}
     LiveExchangeOwner(const LiveExchangeOwner &) = delete;
     LiveExchangeOwner &operator=(const LiveExchangeOwner &) = delete;
     LiveExchangeOwner(LiveExchangeOwner &&) = delete;
@@ -39,6 +40,7 @@ class LiveExchangeOwner final {
             context_ = current_context();
             phase_.store(Phase::Active, std::memory_order_release);
         } catch (...) {
+            exchange_.release_exclusive_registration();
             phase_.store(Phase::Stopped, std::memory_order_release);
             throw;
         }
@@ -48,6 +50,9 @@ class LiveExchangeOwner final {
     [[nodiscard]] bool finish() noexcept {
         if (!is_owner() || frozen_)
             return false;
+        // Disable every mutation before releasing exclusive allocation authority.
+        phase_.store(Phase::Finishing, std::memory_order_release);
+        exchange_.release_exclusive_registration();
         phase_.store(Phase::Stopped, std::memory_order_release);
         return true;
     }

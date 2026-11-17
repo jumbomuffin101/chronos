@@ -5,6 +5,9 @@ the later [live gateway owner](phase7c2a1b-live-owner-design.md) now protects
 the gateway instance. Neither provides asynchronous prepared transactions or
 durable allocator registration. See [the earlier owner boundary design](phase7c2a1-owner-boundary-design.md).
 
+Phase 7C.2A.2a adds [process-local allocation registration](phase7c2a2a-allocator-registration-design.md).
+It does not provide durable IDs, journal persistence or prepared installation.
+
 Status: **blocked prerequisite; no durable journal or acknowledgment path is
 implemented**. This review narrows the work to regression tests and an
 ownership design. The proposed journal in

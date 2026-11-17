@@ -732,6 +732,73 @@ TEST(GatewayExchange, ControlsAreRejectedAfterTerminalShutdown) {
     server.stop();
 }
 
+TEST(GatewayExclusive, ConflictsFailAndStopReleasesRegistration) {
+    using chronos::exchange::AllocationMode;
+    Gateway server{0, 16, 5s, {}, {}, AllocationMode::Exclusive};
+    EXPECT_THROW(static_cast<void>(Gateway{0}), std::runtime_error);
+    EXPECT_THROW(static_cast<void>(chronos::exchange::Exchange{}), std::runtime_error);
+    Client client{server.port()};
+    Client seller{server.port()};
+    Frame reply;
+    ASSERT_TRUE(client.exchange(message(MessageType::Hello), reply));
+    ASSERT_TRUE(seller.exchange(message(MessageType::Hello), reply));
+    ASSERT_TRUE(client.send(order(1, 1, 1, 0, 0, 100, 3)));
+    ASSERT_TRUE(client.receive(reply));
+    EXPECT_EQ(reply.type, MessageType::Execution);
+    const auto buy_id = field(reply, 24);
+    ASSERT_TRUE(client.receive(reply));
+    EXPECT_EQ(reply.payload[44], 3);
+    ASSERT_TRUE(seller.send(order(2, 2, 1, 1, 1, 0, 1)));
+    ASSERT_TRUE(seller.receive(reply));
+    EXPECT_NE(field(reply, 24), buy_id);
+    ASSERT_TRUE(seller.receive(reply));
+    EXPECT_EQ(reply.payload[44], 2);
+    ASSERT_TRUE(client.receive(reply));
+    EXPECT_EQ(reply.payload[44], 1);
+    EXPECT_EQ(field(reply, 24), buy_id);
+    EXPECT_EQ(field(reply, 61), 2U);
+    Frame cancel = message(MessageType::CancelOrder, 3);
+    cancel.payload_size = 8;
+    write_u64(std::span<std::uint8_t, 8>{cancel.payload.data(), 8}, 1);
+    ASSERT_TRUE(client.send(cancel));
+    ASSERT_TRUE(client.receive(reply));
+    EXPECT_EQ(reply.payload[44], 4);
+    EXPECT_EQ(field(reply, 24), buy_id);
+    server.stop();
+    EXPECT_FALSE(server.running());
+    EXPECT_NO_THROW(static_cast<void>(chronos::exchange::Exchange{}));
+}
+
+TEST(GatewayExclusive, FailedStartupDoesNotRetainRegistration) {
+    using chronos::exchange::AllocationMode;
+    EXPECT_THROW((Gateway{0, 0, 5s, {}, {}, AllocationMode::Exclusive}), std::invalid_argument);
+    EXPECT_NO_THROW(static_cast<void>(chronos::exchange::Exchange{}));
+}
+
+TEST(GatewayExclusive, BindFailureAndRepeatedStopReleaseRegistration) {
+    using chronos::exchange::AllocationMode;
+    Socket occupied{::socket(AF_INET, SOCK_STREAM, 0)};
+    ASSERT_GE(occupied.get(), 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    ASSERT_EQ(::bind(occupied.get(), reinterpret_cast<sockaddr *>(&address), sizeof(address)), 0);
+    ASSERT_EQ(::listen(occupied.get(), 1), 0);
+    socklen_t length = sizeof(address);
+    ASSERT_EQ(::getsockname(occupied.get(), reinterpret_cast<sockaddr *>(&address), &length), 0);
+    EXPECT_THROW((Gateway{ntohs(address.sin_port), 16, 5s, {}, {}, AllocationMode::Exclusive}),
+                 std::runtime_error);
+    EXPECT_NO_THROW(static_cast<void>(chronos::exchange::Exchange{}));
+    for (int i = 0; i < 3; ++i) {
+        Gateway server{0, 16, 5s, {}, {}, AllocationMode::Exclusive};
+        EXPECT_THROW(static_cast<void>(chronos::exchange::Exchange{}), std::runtime_error);
+        server.stop();
+        server.stop();
+        EXPECT_NO_THROW(static_cast<void>(chronos::exchange::Exchange{}));
+    }
+}
+
 TEST(GatewayExchange, ControlCompletesOnceBeforeShutdown) {
     ControlRaceTrace trace;
     TransportOptions options;

@@ -15,6 +15,10 @@ namespace {
 // the staged transaction is ready to commit. The process epoch resets on exit.
 constinit detail::OrderIdAllocator process_allocator{true};
 } // namespace
+detail::AllocationRegistry &detail::AllocationRegistry::process() noexcept {
+    static AllocationRegistry registry;
+    return registry;
+}
 struct Exchange::State {
     struct Subscription {
         std::uint64_t generation;
@@ -139,9 +143,15 @@ static_assert(std::is_nothrow_destructible_v<Report>);
 
 Exchange::Exchange(std::size_t sessions, std::size_t orders, std::size_t reports,
                    std::size_t requests, std::uint64_t initial_feed_sequence)
-    : state_(std::make_unique<State>()), max_sessions_(sessions), max_orders_(orders),
+    : Exchange(LiveTag{}, sessions, orders, reports, requests, initial_feed_sequence,
+               AllocationMode::Shared) {}
+Exchange::Exchange(LiveTag, std::size_t sessions, std::size_t orders, std::size_t reports,
+                   std::size_t requests, std::uint64_t initial_feed_sequence, AllocationMode mode)
+    : registration_(detail::AllocationRegistry::process().acquire(mode)),
+      state_(std::make_unique<State>()), max_sessions_(sessions), max_orders_(orders),
       max_reports_(reports), max_requests_(requests), allocator_(&process_allocator) {
     state_->initial_feed_sequence = initial_feed_sequence;
+    exclusive_ = mode == AllocationMode::Exclusive;
 }
 Exchange::Exchange(IsolatedTag, std::size_t sessions, std::size_t orders, std::size_t reports,
                    std::size_t requests, std::uint64_t initial_feed_sequence, std::uint64_t last_id)
@@ -158,6 +168,12 @@ std::unique_ptr<Exchange> Exchange::isolated(std::size_t sessions, std::size_t o
                                                   requests, initial_feed_sequence, last_id));
 }
 Exchange::~Exchange() = default;
+void Exchange::release_exclusive_registration() noexcept {
+    if (exclusive_) {
+        registration_.release();
+        exclusive_ = false;
+    }
+}
 bool Exchange::open_session(std::uint64_t session) {
     if (session == 0 || state_->sessions.size() >= max_sessions_ ||
         state_->sessions.contains(session))
