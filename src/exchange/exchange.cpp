@@ -168,6 +168,55 @@ std::unique_ptr<Exchange> Exchange::isolated(std::size_t sessions, std::size_t o
                                                   requests, initial_feed_sequence, last_id));
 }
 Exchange::~Exchange() = default;
+Exchange::Prepared::Prepared() = default;
+Exchange::Prepared::~Prepared() = default;
+
+std::unique_ptr<Exchange::Prepared>
+Exchange::prepare_submit(std::uint64_t session, std::uint64_t request, std::uint64_t client,
+                         core::SymbolId symbol, core::Side side, core::OrderType type,
+                         core::Price price, core::Quantity quantity) {
+    if (!exclusive_)
+        throw std::logic_error("prepared submission requires exclusive registration");
+    auto prepared = std::make_unique<Prepared>();
+    prepared->reservation = std::make_unique<detail::OrderIdAllocator::Reservation>(*allocator_);
+    const auto reserved_id = prepared->reservation->id();
+    const auto previous_id =
+        reserved_id == 0 ? std::numeric_limits<std::uint64_t>::max() : reserved_id - 1;
+    auto work = Exchange::isolated(max_sessions_, max_orders_, max_reports_, max_requests_,
+                                   state_->initial_feed_sequence, previous_id);
+    work->state_ = state_->clone();
+    prepared->result = work->submit(session, request, client, symbol, side, type, price, quantity);
+    if (prepared->result == Result::Accepted) {
+        if (reserved_id == 0 || work->state_->orders.empty() ||
+            work->state_->orders.back().internal != reserved_id)
+            throw std::logic_error("prepared order ID does not match reservation");
+        prepared->candidate = std::move(work->state_);
+    }
+    return prepared;
+}
+
+std::unique_ptr<Exchange::Prepared>
+Exchange::prepare_cancel(std::uint64_t session, std::uint64_t request, std::uint64_t client) {
+    if (!exclusive_)
+        throw std::logic_error("prepared cancellation requires exclusive registration");
+    auto prepared = std::make_unique<Prepared>();
+    auto work = Exchange::isolated(max_sessions_, max_orders_, max_reports_, max_requests_,
+                                   state_->initial_feed_sequence);
+    work->state_ = state_->clone();
+    prepared->result = work->cancel(session, request, client);
+    if (prepared->result == Result::Accepted)
+        prepared->candidate = std::move(work->state_);
+    return prepared;
+}
+
+void Exchange::install_prepared(Prepared &prepared) noexcept {
+    static_assert(std::is_nothrow_swappable_v<std::unique_ptr<State>>);
+    static_assert(noexcept(std::declval<detail::OrderIdAllocator::Reservation &>().commit()));
+    state_.swap(prepared.candidate);
+    if (prepared.reservation)
+        prepared.reservation->commit();
+}
+
 void Exchange::release_exclusive_registration() noexcept {
     if (exclusive_) {
         registration_.release();
@@ -553,14 +602,30 @@ std::vector<std::uint64_t> Exchange::verification_state() const {
     return verification_state_bounded(std::numeric_limits<std::size_t>::max());
 }
 std::vector<std::uint64_t> Exchange::verification_state_bounded(std::size_t max_words) const {
-    return state_words(max_words, false);
+    return state_words(max_words, false, 0);
 }
 std::vector<std::uint64_t> Exchange::isolated_continuation_state(std::size_t max_words) const {
     if (!isolated_)
         throw std::logic_error("continuation capture requires an isolated exchange");
-    return state_words(max_words, true);
+    return state_words(max_words, true, private_allocator_.private_last());
 }
-std::vector<std::uint64_t> Exchange::state_words(std::size_t max_words, bool exact) const {
+std::vector<std::uint64_t> Exchange::live_continuation_state(std::size_t max_words) const {
+    if (isolated_ || !exclusive_)
+        throw std::logic_error("live continuation capture requires exclusive registration");
+    detail::OrderIdAllocator::Reservation reservation(*allocator_);
+    const auto next = reservation.id();
+    const auto last = next == 0 ? std::numeric_limits<std::uint64_t>::max() : next - 1;
+    return state_words(max_words, true, last);
+}
+#ifdef CHRONOS_TEST_ID_SEAM
+bool Exchange::seed_process_id_for_test(std::uint64_t last) {
+    if (isolated_ || !exclusive_ || !state_->orders.empty() || !state_->trades.empty())
+        return false;
+    return allocator_->seed_initial_for_test(last);
+}
+#endif
+std::vector<std::uint64_t> Exchange::state_words(std::size_t max_words, bool exact,
+                                                 std::uint64_t exact_last) const {
     // Exact no-allocation shape preflight before allocating output or
     // normalization nodes. All arithmetic is checked against the caller's cap.
     std::size_t minimum = 0;
@@ -620,8 +685,7 @@ std::vector<std::uint64_t> Exchange::state_words(std::size_t max_words, bool exa
         const auto id = entry.internal;
         if (id == 0 || !labels.emplace(id, static_cast<std::uint64_t>(i) + 1).second)
             throw std::logic_error("invalid or duplicate internal order ID");
-        if (exact &&
-            (!state_->sessions.contains(entry.session) || id > private_allocator_.private_last()))
+        if (exact && (!state_->sessions.contains(entry.session) || id > exact_last))
             throw std::logic_error("invalid order owner or allocator high-water");
     }
     const auto label = [&](std::uint64_t id) -> std::uint64_t {
@@ -783,7 +847,7 @@ std::vector<std::uint64_t> Exchange::state_words(std::size_t max_words, bool exa
         add(max_orders_);
         add(max_reports_);
         add(max_requests_);
-        add(private_allocator_.private_last());
+        add(exact_last);
         for (const auto &[symbol, engine] : state_->engines) {
             add(symbol);
             add(engine->book_revision());

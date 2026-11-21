@@ -8,7 +8,8 @@ option(CHRONOS_ENABLE_SANITIZERS "Enable address and undefined behavior sanitize
 option(CHRONOS_ENABLE_BENCHMARKS "Fetch Google Benchmark for future benchmarks" OFF)
 option(CHRONOS_ENABLE_EXCHANGE_BASELINE "Build the Linux exchange-layer baseline" OFF)
 
-add_library(chronos_core src/orderbook/order_book.cpp src/matching/matching_engine.cpp src/exchange/exchange.cpp src/simulation/simulation.cpp src/eventlog/event_log.cpp src/snapshot/checkpoint.cpp src/snapshot/restorable.cpp)
+set(CHRONOS_CORE_SOURCES src/orderbook/order_book.cpp src/matching/matching_engine.cpp src/exchange/exchange.cpp src/simulation/simulation.cpp src/eventlog/event_log.cpp src/snapshot/checkpoint.cpp src/snapshot/restorable.cpp)
+add_library(chronos_core ${CHRONOS_CORE_SOURCES})
 target_compile_features(chronos_core PUBLIC cxx_std_20)
 target_include_directories(chronos_core PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
 
@@ -78,6 +79,13 @@ if(BUILD_TESTING)
     GIT_TAG f8d7d77c06936315286eb55f8de22cd23c188571)
   set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
+  # A separate executable and core copy keep the allocator test seam out of
+  # the production library and prevent exhaustion from affecting other tests.
+  add_library(chronos_core_id_test STATIC ${CHRONOS_CORE_SOURCES})
+  target_compile_features(chronos_core_id_test PUBLIC cxx_std_20)
+  target_include_directories(chronos_core_id_test PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>)
+  target_compile_definitions(chronos_core_id_test PUBLIC CHRONOS_TEST_ID_SEAM)
+  chronos_configure_target(chronos_core_id_test)
   add_subdirectory(tests)
 endif()
 

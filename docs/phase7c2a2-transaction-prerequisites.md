@@ -9,6 +9,11 @@ The subsequent [allocation registration milestone](phase7c2a2a-allocator-registr
 implements a process-local shared/exclusive lifetime registry. It does not
 implement prepared transactions, durable IDs or the later publication gate.
 
+Phase 7C.2A.2b adds a synchronous experimental
+[prepared owner scope](phase7c2a2b-prepared-transactions-design.md). It does
+not implement a durable journal, asynchronous prepared handles or gateway
+publication gating.
+
 ## 1. Exclusive durable-owner registration
 
 Introduce a process-wide registry with a move-only registration owned by the

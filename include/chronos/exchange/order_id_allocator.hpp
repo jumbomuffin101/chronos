@@ -42,6 +42,16 @@ class OrderIdAllocator {
 
   private:
     friend class ::chronos::exchange::Exchange;
+#ifdef CHRONOS_TEST_ID_SEAM
+    // Available only in the isolated test binary, and only before allocation.
+    bool seed_initial_for_test(std::uint64_t last) {
+        std::lock_guard lock(mutex_);
+        if (!synchronized_ || last_ != 0)
+            return false;
+        last_ = last;
+        return true;
+    }
+#endif
     // Exchange calls this only for its owned, unsynchronized private context.
     [[nodiscard]] std::uint64_t private_last() const noexcept { return last_; }
     std::mutex mutex_;

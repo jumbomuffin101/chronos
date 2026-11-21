@@ -134,13 +134,34 @@ class Exchange {
     friend class LiveExchangeOwner;
     struct IsolatedTag {};
     struct LiveTag {};
-    [[nodiscard]] std::vector<std::uint64_t> state_words(std::size_t max_words, bool exact) const;
+    [[nodiscard]] std::vector<std::uint64_t> state_words(std::size_t max_words, bool exact,
+                                                         std::uint64_t exact_last) const;
+    [[nodiscard]] std::vector<std::uint64_t> live_continuation_state(std::size_t max_words) const;
+#ifdef CHRONOS_TEST_ID_SEAM
+    [[nodiscard]] bool seed_process_id_for_test(std::uint64_t last);
+#endif
     Exchange(IsolatedTag, std::size_t sessions, std::size_t orders, std::size_t reports,
              std::size_t requests, std::uint64_t initial_feed_sequence, std::uint64_t last_id);
     Exchange(LiveTag, std::size_t sessions, std::size_t orders, std::size_t reports,
              std::size_t requests, std::uint64_t initial_feed_sequence, AllocationMode mode);
     void release_exclusive_registration() noexcept;
     struct State;
+    struct Prepared {
+        Prepared();
+        ~Prepared();
+        Prepared(const Prepared &) = delete;
+        Prepared &operator=(const Prepared &) = delete;
+        Result result = Result::InvalidOrder;
+        std::unique_ptr<State> candidate;
+        std::unique_ptr<detail::OrderIdAllocator::Reservation> reservation;
+    };
+    [[nodiscard]] std::unique_ptr<Prepared>
+    prepare_submit(std::uint64_t session, std::uint64_t request, std::uint64_t client,
+                   core::SymbolId symbol, core::Side side, core::OrderType type, core::Price price,
+                   core::Quantity quantity);
+    [[nodiscard]] std::unique_ptr<Prepared>
+    prepare_cancel(std::uint64_t session, std::uint64_t request, std::uint64_t client);
+    void install_prepared(Prepared &prepared) noexcept;
     // Shared leases outlive state_; an exclusive owner may release at terminal stop.
     detail::AllocationRegistry::Lease registration_;
     std::unique_ptr<State> state_;

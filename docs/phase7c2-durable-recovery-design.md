@@ -6,6 +6,10 @@ publish a live recovered exchange. Its stream flush is not a durable sync.
 This design does not claim durable recovery, authenticated sessions or
 exactly-once delivery for the current system.
 
+Phase 7C.2A.2b adds an isolated, synchronous owner-held preparation experiment
+described in [its design](phase7c2a2b-prepared-transactions-design.md). It is
+not integrated with a journal or gateway output publication.
+
 ## Scope and prerequisites
 
 Phase 7C.2A adds a durable, single-owner journal. Phase 7C.2B adds a bounded,
@@ -15,10 +19,12 @@ configured exchange identity on a supported POSIX local filesystem. Gateway
 authentication, distributed consensus, failover, brokerage connections,
 durable socket delivery and cross-process concurrent writers are out of scope.
 
-The current exchange transaction clones state internally and commits during
-`submit` or `cancel`; it does not expose the staged transaction required here.
-Implementation must first separate preparation from publication behind a
-private owner-thread interface, without weakening existing transaction tests.
+The ordinary exchange transaction clones state internally and commits during
+`submit` or `cancel`. The later experimental synchronous prepared scope stages
+and installs within one owner call, but does not provide the persistent
+prepared handle or gateway publication gate required here. Any durable
+extension must preserve its owner and failure guarantees without weakening
+existing transaction tests.
 Likewise, the existing CHRSTATE format is history-backed and restricted to
 completed isolated simulations: it is not yet an arbitrary live snapshot or a
 restart manifest. A generic exact-state codec, allocator publication guard and

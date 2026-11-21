@@ -1,4 +1,4 @@
-add_executable(chronos_core_tests core/test_order.cpp orderbook/test_order_book.cpp matching/test_matching.cpp matching/test_differential.cpp exchange/test_exchange.cpp exchange/test_id_allocator.cpp exchange/test_allocation_registration.cpp exchange/test_transaction_boundary.cpp exchange/test_offline_owner.cpp exchange/test_live_owner.cpp simulation/test_simulation.cpp eventlog/test_event_log.cpp snapshot/test_checkpoint.cpp snapshot/test_restorable.cpp)
+add_executable(chronos_core_tests core/test_order.cpp orderbook/test_order_book.cpp matching/test_matching.cpp matching/test_differential.cpp exchange/test_exchange.cpp exchange/test_id_allocator.cpp exchange/test_allocation_registration.cpp exchange/test_transaction_boundary.cpp exchange/test_offline_owner.cpp exchange/test_live_owner.cpp exchange/test_prepared.cpp simulation/test_simulation.cpp eventlog/test_event_log.cpp snapshot/test_checkpoint.cpp snapshot/test_restorable.cpp)
 target_link_libraries(chronos_core_tests PRIVATE chronos_core GTest::gtest_main)
 target_compile_definitions(chronos_core_tests PRIVATE CHRONOS_TEST_DATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 chronos_configure_target(chronos_core_tests)
@@ -10,6 +10,11 @@ add_executable(chronos_allocation_tests orderbook/test_allocation_failure.cpp)
 target_link_libraries(chronos_allocation_tests PRIVATE chronos_core GTest::gtest_main)
 chronos_configure_target(chronos_allocation_tests)
 gtest_discover_tests(chronos_allocation_tests)
+
+add_executable(chronos_prepared_exhaustion_tests exchange/test_prepared_exhaustion.cpp)
+target_link_libraries(chronos_prepared_exhaustion_tests PRIVATE chronos_core_id_test GTest::gtest_main)
+chronos_configure_target(chronos_prepared_exhaustion_tests)
+gtest_discover_tests(chronos_prepared_exhaustion_tests PROPERTIES TIMEOUT 10)
 
 if(TARGET chronos_gateway_lib)
   add_executable(chronos_gateway_tests gateway/test_gateway.cpp)

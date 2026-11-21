@@ -194,6 +194,101 @@ TEST(AllocationRegistrationFailure, SharedAttemptCannotBypassOutstandingExclusiv
     EXPECT_NO_THROW(static_cast<void>(exchange::Exchange{}));
 }
 
+TEST(PreparedExchangeAllocation, InstallationDoesNotAllocate) {
+    using namespace chronos;
+    exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    ASSERT_TRUE(owner.open_session(1));
+    bool threw = false;
+    exchange::PreparedScopeResult result;
+    try {
+        result = owner.with_prepared_submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy,
+                                            core::OrderType::Limit, 100, 1, [](exchange::Result) {
+                                                allocations_until_failure = 0;
+                                                return true;
+                                            });
+    } catch (const std::bad_alloc &) {
+        threw = true;
+    } catch (...) {
+        allocations_until_failure = -1;
+        throw;
+    }
+    allocations_until_failure = -1;
+    EXPECT_FALSE(threw);
+    EXPECT_EQ(result.result, exchange::Result::Accepted);
+    EXPECT_TRUE(result.installed);
+    EXPECT_TRUE(owner.front(1));
+    threw = false;
+    try {
+        result = owner.with_prepared_cancel(1, 2, 1, [](exchange::Result) {
+            allocations_until_failure = 0;
+            return true;
+        });
+    } catch (const std::bad_alloc &) {
+        threw = true;
+    } catch (...) {
+        allocations_until_failure = -1;
+        throw;
+    }
+    allocations_until_failure = -1;
+    EXPECT_FALSE(threw);
+    EXPECT_EQ(result.result, exchange::Result::Accepted);
+    EXPECT_TRUE(result.installed);
+    EXPECT_TRUE(owner.finish());
+}
+
+TEST(PreparedExchangeAllocation, PreparationFailuresLeaveLiveStateUnchanged) {
+    using namespace chronos;
+    int failures = 0;
+    bool completed = false;
+    for (int fail_at = 0; fail_at < 128 && !completed; ++fail_at) {
+        std::uint64_t prior_id = 0;
+        {
+            exchange::Exchange shared;
+            ASSERT_TRUE(shared.open_session(1));
+            ASSERT_EQ(shared.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy,
+                                    core::OrderType::Limit, 100, 1),
+                      exchange::Result::Accepted);
+            ASSERT_TRUE(shared.front(1));
+            prior_id = shared.front(1)->internal_order_id;
+        }
+        exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+        owner.bind();
+        ASSERT_TRUE(owner.open_session(1));
+        const auto before = owner.verification_state();
+        bool threw = false;
+        allocations_until_failure = fail_at;
+        try {
+            const auto result = owner.with_prepared_submit(
+                1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit, 100, 1,
+                [](exchange::Result) { return true; });
+            allocations_until_failure = -1;
+            EXPECT_EQ(result.result, exchange::Result::Accepted);
+            EXPECT_TRUE(result.installed);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            threw = true;
+        } catch (...) {
+            allocations_until_failure = -1;
+            throw;
+        }
+        if (threw) {
+            ++failures;
+            EXPECT_EQ(owner.verification_state(), before);
+            EXPECT_FALSE(owner.front(1));
+            ASSERT_EQ(owner.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy,
+                                   core::OrderType::Limit, 100, 1),
+                      exchange::Result::Accepted);
+        }
+        ASSERT_TRUE(owner.front(1));
+        EXPECT_EQ(owner.front(1)->internal_order_id, prior_id + 1);
+        EXPECT_TRUE(owner.finish());
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GE(failures, 5);
+}
+
 namespace {
 Order make_order(std::uint64_t id, Price price, Quantity quantity) {
     return Order{OrderId{id}, SymbolId{1}, Side::Buy, OrderType::Limit, price, quantity, id};
