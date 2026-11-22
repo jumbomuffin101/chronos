@@ -108,7 +108,9 @@ Measurement run(std::string_view mode, bool fill, std::size_t n) {
         return {std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count(),
                 allocations, allocated_bytes};
     }
-    gateway::Gateway server{0, 1, std::chrono::seconds(30)};
+    const auto allocation = mode == "tcp_exclusive" ? exchange::AllocationMode::Exclusive
+                                                    : exchange::AllocationMode::Shared;
+    gateway::Gateway server{0, 1, std::chrono::seconds(30), {}, {}, allocation};
     gateway::Client client{server.port(), std::chrono::seconds(10)};
     Frame hello, reply;
     hello.type = gateway::MessageType::Hello;
@@ -149,7 +151,7 @@ int main() {
         std::cout << "mode,workload,background,sample,latency_ns,allocations,bytes\n";
         for (const auto n : {10U, 30U, 100U})
             for (const bool fill : {false, true})
-                for (const auto mode : {"engine", "exchange", "tcp"})
+                for (const auto mode : {"engine", "exchange", "tcp", "tcp_exclusive"})
                     for (int sample = -1; sample < 9; ++sample) {
                         const auto m = run(mode, fill, n);
                         if (sample >= 0)

@@ -14,6 +14,15 @@
 
 namespace chronos::gateway {
 
+#ifdef CHRONOS_TEST_GATE_SEAM
+namespace detail {
+inline void (*test_before_output_reservation)(void *) = nullptr;
+inline void *test_output_reservation_context = nullptr;
+inline void (*test_before_output_capacity_check)(void *, std::vector<std::uint8_t> &) = nullptr;
+inline void *test_output_capacity_context = nullptr;
+} // namespace detail
+#endif
+
 enum class TracePoint {
     SocketConfigured,
     ClientSendStart,

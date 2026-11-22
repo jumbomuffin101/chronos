@@ -149,7 +149,7 @@ class Gateway::Impl {
          exchange::AllocationMode allocation)
         : listener_(::socket(AF_INET, SOCK_STREAM, 0)), maximum_(maximum), idle_(idle),
           exchange_(maximum, 1024, 128, 1024, allocation), options_(options),
-          default_risk_(std::move(default_risk)) {
+          default_risk_(std::move(default_risk)), allocation_(allocation) {
         if (listener_.get() < 0 || maximum == 0 || maximum > 1024 || idle.count() <= 0 ||
             default_risk_.max_market_price <= 0 || default_risk_.allowed_symbols.size() > 1024 ||
             default_risk_.max_abs_position >
@@ -345,22 +345,78 @@ class Gateway::Impl {
             return;
         }
         const auto client = wire64(p);
+        // Reserve and encode a possible business rejection before preparation.
+        // Accepted commands retain their reports in the bounded candidate state.
+        std::vector<std::uint8_t> rejection;
+        if (allocation_ == exchange::AllocationMode::Exclusive) {
+            Frame reply;
+            reply.type = MessageType::OrderAck;
+            reply.request_id = frame.request_id;
+            reply.payload_size = 17;
+            put64(reply.payload.data(), client);
+#ifdef CHRONOS_TEST_GATE_SEAM
+            if (detail::test_before_output_capacity_check)
+                detail::test_before_output_capacity_check(detail::test_output_capacity_context,
+                                                          session.output);
+#endif
+            if (!encode_frame(reply, rejection) ||
+                rejection.size() > max_output - (session.output.size() - session.sent)) {
+                session.dead = true;
+                return;
+            }
+            if (session.sent != 0) {
+                session.output.erase(session.output.begin(),
+                                     session.output.begin() +
+                                         static_cast<std::ptrdiff_t>(session.sent));
+                session.sent = 0;
+            }
+#ifdef CHRONOS_TEST_GATE_SEAM
+            if (detail::test_before_output_reservation)
+                detail::test_before_output_reservation(detail::test_output_reservation_context);
+#endif
+            session.output.reserve(session.output.size() + rejection.size());
+        }
         exchange::Result result;
         trace(options_.trace, TracePoint::TransactionStart, session.id, frame.request_id);
-        if (frame.type == MessageType::CancelOrder)
-            result = exchange_.cancel(session.id, frame.request_id, client);
-        else {
+        if (frame.type == MessageType::CancelOrder) {
+            if (allocation_ == exchange::AllocationMode::Exclusive) {
+                const auto outcome =
+                    exchange_.cancel_prepared_non_durable(session.id, frame.request_id, client);
+                result = outcome.result;
+                if (result == exchange::Result::Accepted && !outcome.installed) {
+                    session.dead = true;
+                    return;
+                }
+            } else
+                result = exchange_.cancel(session.id, frame.request_id, client);
+        } else {
             const auto symbol = (static_cast<std::uint32_t>(p[8]) << 24) |
                                 (static_cast<std::uint32_t>(p[9]) << 16) |
                                 (static_cast<std::uint32_t>(p[10]) << 8) | p[11];
-            result = exchange_.submit(session.id, frame.request_id, client, core::SymbolId{symbol},
-                                      static_cast<core::Side>(p[12]),
-                                      static_cast<core::OrderType>(p[13]),
-                                      std::bit_cast<std::int64_t>(wire64(p + 14)), wire64(p + 22));
+            if (allocation_ == exchange::AllocationMode::Exclusive) {
+                const auto outcome = exchange_.submit_prepared_non_durable(
+                    session.id, frame.request_id, client, core::SymbolId{symbol},
+                    static_cast<core::Side>(p[12]), static_cast<core::OrderType>(p[13]),
+                    std::bit_cast<std::int64_t>(wire64(p + 14)), wire64(p + 22));
+                result = outcome.result;
+                if (result == exchange::Result::Accepted && !outcome.installed) {
+                    session.dead = true;
+                    return;
+                }
+            } else
+                result = exchange_.submit(
+                    session.id, frame.request_id, client, core::SymbolId{symbol},
+                    static_cast<core::Side>(p[12]), static_cast<core::OrderType>(p[13]),
+                    std::bit_cast<std::int64_t>(wire64(p + 14)), wire64(p + 22));
         }
         trace(options_.trace, TracePoint::TransactionEnd, session.id, frame.request_id,
               static_cast<std::uint8_t>(result));
         if (result != exchange::Result::Accepted) {
+            if (allocation_ == exchange::AllocationMode::Exclusive) {
+                rejection[header_size + 8] = static_cast<std::uint8_t>(result);
+                session.output.insert(session.output.end(), rejection.begin(), rejection.end());
+                return;
+            }
             Frame reply;
             reply.type = MessageType::OrderAck;
             reply.request_id = frame.request_id;
@@ -600,6 +656,7 @@ class Gateway::Impl {
     exchange::LiveExchangeOwner exchange_;
     TransportOptions options_;
     exchange::RiskLimits default_risk_;
+    exchange::AllocationMode allocation_;
     std::mutex controls_mutex_;
     std::vector<std::shared_ptr<Control>> controls_;
     bool stopping_ = false; // protected by controls_mutex_

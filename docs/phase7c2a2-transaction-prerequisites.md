@@ -104,6 +104,12 @@ to establish a nonthrowing installation blocks any durable success response.
 
 ## 5. Gateway output-publication gate
 
+Phase 7C.2A.3a adds an in-memory exclusive-gateway path; see
+[its design](phase7c2a3a-publication-gate-design.md). This does not satisfy the
+future durable-boundary requirement. The ordinary shared pathway remains
+non-durable, and the generic prepared callback remains a trusted API outside
+the supported gateway path.
+
 Add an owner-controlled output gate for each admitted order/cancel decision.
 It must retain the already bounded private reports and command-derived market
 events until installation and, in a later journal milestone, a verified

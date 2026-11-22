@@ -21,4 +21,15 @@ if(TARGET chronos_gateway_lib)
   target_link_libraries(chronos_gateway_tests PRIVATE chronos_gateway_lib GTest::gtest_main)
   chronos_configure_target(chronos_gateway_tests)
   gtest_discover_tests(chronos_gateway_tests PROPERTIES TIMEOUT 10)
+
+  # Separate gateway copy confines the blocking pre-install test hook to this
+  # executable; the production gateway does not compile the hook.
+  add_library(chronos_gateway_gate_test STATIC ../src/gateway/protocol.cpp ../src/gateway/tcp.cpp)
+  target_compile_definitions(chronos_gateway_gate_test PUBLIC CHRONOS_TEST_GATE_SEAM)
+  target_link_libraries(chronos_gateway_gate_test PUBLIC Threads::Threads chronos_core)
+  chronos_configure_target(chronos_gateway_gate_test)
+  add_executable(chronos_gateway_gate_tests gateway/test_publication_gate.cpp)
+  target_link_libraries(chronos_gateway_gate_tests PRIVATE chronos_gateway_gate_test GTest::gtest_main)
+  chronos_configure_target(chronos_gateway_gate_tests)
+  gtest_discover_tests(chronos_gateway_gate_tests PROPERTIES TIMEOUT 10)
 endif()

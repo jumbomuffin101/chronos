@@ -675,6 +675,108 @@ TEST(GatewayExchange, ThreeClientsReceivePublicSnapshotAndOrderedTradeUpdates) {
     EXPECT_EQ(field(f, 37), 2U);
 }
 
+TEST(GatewayExclusive, PreparedCommandsRouteReportsAndOrderedMarketData) {
+    Gateway server{0, 4, 5s, {}, {}, chronos::exchange::AllocationMode::Exclusive};
+    Client seller{server.port()}, buyer{server.port()}, subscriber{server.port()};
+    Frame f;
+    ASSERT_TRUE(seller.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(buyer.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(subscriber.exchange(message(MessageType::Hello), f));
+    auto subscribe = message(MessageType::Subscribe, 44);
+    subscribe.payload_size = 4;
+    subscribe.payload[3] = 1;
+    ASSERT_TRUE(subscriber.exchange(subscribe, f));
+    ASSERT_EQ(f.type, MessageType::MarketAck);
+    ASSERT_TRUE(subscriber.receive(f));
+    ASSERT_EQ(f.payload[12], 0);
+    ASSERT_TRUE(seller.send(order(1, 1, 1, 1, 0, 100, 5)));
+    ASSERT_TRUE(seller.receive(f));
+    ASSERT_EQ(f.payload[44], 0);
+    const auto sell_id = field(f, 24);
+    ASSERT_TRUE(seller.receive(f));
+    ASSERT_EQ(f.payload[44], 3);
+    ASSERT_TRUE(subscriber.receive(f));
+    ASSERT_EQ(field(f, 4), 1U);
+    ASSERT_TRUE(buyer.send(order(2, 2, 1, 0, 1, 0, 3)));
+    ASSERT_TRUE(buyer.receive(f));
+    ASSERT_EQ(f.payload[44], 0);
+    EXPECT_NE(field(f, 24), sell_id);
+    ASSERT_TRUE(buyer.receive(f));
+    EXPECT_EQ(f.payload[44], 2);
+    EXPECT_EQ(field(f, 53), 3U);
+    ASSERT_TRUE(seller.receive(f));
+    EXPECT_EQ(f.payload[44], 1);
+    EXPECT_EQ(field(f, 61), 2U);
+    ASSERT_TRUE(subscriber.receive(f));
+    EXPECT_EQ(f.payload[12], 2);
+    EXPECT_EQ(field(f, 4), 2U);
+    ASSERT_TRUE(subscriber.receive(f));
+    EXPECT_EQ(f.payload[12], 1);
+    EXPECT_EQ(field(f, 4), 3U);
+    auto cancel = message(MessageType::CancelOrder, 3);
+    cancel.payload_size = 8;
+    write_u64(std::span<std::uint8_t, 8>{cancel.payload.data(), 8}, 1);
+    ASSERT_TRUE(buyer.exchange(cancel, f));
+    EXPECT_EQ(f.type, MessageType::OrderAck);
+    EXPECT_EQ(f.payload[8], static_cast<std::uint8_t>(chronos::exchange::Result::NotFound));
+    ASSERT_TRUE(seller.send(cancel));
+    ASSERT_TRUE(seller.receive(f));
+    EXPECT_EQ(f.type, MessageType::Execution);
+    EXPECT_EQ(f.payload[44], 4);
+    EXPECT_EQ(field(f, 53), 2U);
+    server.stop();
+    EXPECT_EQ(server.trade_count(), 1U);
+}
+
+TEST(GatewayExclusive, RejectionDoesNotConsumeRequestOrOrderIdentity) {
+    chronos::exchange::RiskLimits limits;
+    limits.max_order_quantity = 2;
+    Gateway server{0, 2, 5s, {}, limits, chronos::exchange::AllocationMode::Exclusive};
+    Client client{server.port()};
+    Frame f;
+    ASSERT_TRUE(client.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(client.exchange(order(7, 7, 1, 0, 0, 100, 3), f));
+    ASSERT_EQ(f.type, MessageType::OrderAck);
+    EXPECT_EQ(f.payload[8], static_cast<std::uint8_t>(chronos::exchange::Result::RiskQuantity));
+    ASSERT_TRUE(client.send(order(7, 7, 1, 0, 0, 100, 2)));
+    ASSERT_TRUE(client.receive(f));
+    EXPECT_EQ(f.payload[44], 0);
+    ASSERT_TRUE(client.receive(f));
+    EXPECT_EQ(f.payload[44], 3);
+    ASSERT_TRUE(client.exchange(order(8, 7, 1, 0, 0, 100, 1), f));
+    EXPECT_EQ(f.type, MessageType::OrderAck);
+    EXPECT_EQ(f.payload[8], static_cast<std::uint8_t>(chronos::exchange::Result::DuplicateOrder));
+}
+
+TEST(GatewayExclusive, PreparedSweepPreservesFifoAcrossPriceLevels) {
+    Gateway server{0, 3, 5s, {}, {}, chronos::exchange::AllocationMode::Exclusive};
+    Client seller{server.port()}, buyer{server.port()};
+    Frame f;
+    ASSERT_TRUE(seller.exchange(message(MessageType::Hello), f));
+    ASSERT_TRUE(buyer.exchange(message(MessageType::Hello), f));
+    for (std::uint64_t id = 1; id <= 3; ++id) {
+        ASSERT_TRUE(seller.send(order(id, id, 1, 1, 0, id == 3 ? 101 : 100, 1)));
+        ASSERT_TRUE(seller.receive(f));
+        ASSERT_EQ(f.payload[44], 0);
+        ASSERT_TRUE(seller.receive(f));
+        ASSERT_EQ(f.payload[44], 3);
+    }
+    ASSERT_TRUE(buyer.send(order(10, 10, 1, 0, 1, 0, 3)));
+    ASSERT_TRUE(buyer.receive(f));
+    ASSERT_EQ(f.payload[44], 0);
+    for (std::uint64_t id = 1; id <= 3; ++id) {
+        ASSERT_TRUE(buyer.receive(f));
+        EXPECT_EQ(f.payload[44], id == 3 ? 2 : 1);
+        EXPECT_EQ(field(f, 45), id == 3 ? 101U : 100U);
+        ASSERT_TRUE(seller.receive(f));
+        EXPECT_EQ(f.payload[44], 2);
+        EXPECT_EQ(field(f, 16), id);
+        EXPECT_EQ(field(f, 45), id == 3 ? 101U : 100U);
+    }
+    server.stop();
+    EXPECT_EQ(server.trade_count(), 3U);
+}
+
 TEST(GatewayExchange, ConfiguredRiskRejectsBeforeOrderAcceptance) {
     chronos::exchange::RiskLimits limits;
     limits.max_order_quantity = 2;

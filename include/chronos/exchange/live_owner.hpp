@@ -34,6 +34,12 @@ class LiveExchangeOwner final {
     LiveExchangeOwner &operator=(const LiveExchangeOwner &) = delete;
     LiveExchangeOwner(LiveExchangeOwner &&) = delete;
     LiveExchangeOwner &operator=(LiveExchangeOwner &&) = delete;
+#ifdef CHRONOS_TEST_GATE_SEAM
+    // Only the separately linked gateway-test executable defines this seam.
+    static inline void (*test_before_prepare)(void *) = nullptr;
+    static inline bool (*test_before_install)(void *) = nullptr;
+    static inline void *test_before_install_context = nullptr;
+#endif
 
     // The surrounding owner must keep this object alive throughout every call.
     // Bind is single-use, including after failed allocation or shutdown.
@@ -106,6 +112,26 @@ class LiveExchangeOwner final {
                                 std::uint64_t client) {
         require_mutation();
         return exchange_.cancel(session, request, client);
+    }
+    // Gateway-facing non-durable authorization: no caller-supplied callback
+    // runs between preparation and installation. Rejections are authoritative
+    // results with no candidate installed; no persistence is implied.
+    [[nodiscard]] PreparedScopeResult
+    submit_prepared_non_durable(std::uint64_t session, std::uint64_t request, std::uint64_t client,
+                                core::SymbolId symbol, core::Side side, core::OrderType type,
+                                core::Price price, core::Quantity quantity) {
+        return prepared_scope(
+            [&] {
+                return exchange_.prepare_submit(session, request, client, symbol, side, type, price,
+                                                quantity);
+            },
+            authorize_non_durable);
+    }
+    [[nodiscard]] PreparedScopeResult cancel_prepared_non_durable(std::uint64_t session,
+                                                                  std::uint64_t request,
+                                                                  std::uint64_t client) {
+        return prepared_scope([&] { return exchange_.prepare_cancel(session, request, client); },
+                              authorize_non_durable);
     }
     void pop(std::uint64_t session) {
         require_mutation();
@@ -180,6 +206,15 @@ class LiveExchangeOwner final {
     }
 
   private:
+    [[nodiscard]] static bool authorize_non_durable(Result result) {
+#ifdef CHRONOS_TEST_GATE_SEAM
+        if (result == Result::Accepted && test_before_install)
+            return test_before_install(test_before_install_context);
+#else
+        (void)result;
+#endif
+        return true;
+    }
     template <class Prepare, class F>
     PreparedScopeResult prepared_scope(Prepare &&prepare, F &&decision) {
         require_mutation();
@@ -187,6 +222,10 @@ class LiveExchangeOwner final {
             throw std::logic_error("prepared scope requires exclusive registration");
         PreparedScopeResult outcome;
         with_frozen_state([&] {
+#ifdef CHRONOS_TEST_GATE_SEAM
+            if (test_before_prepare)
+                test_before_prepare(test_before_install_context);
+#endif
             auto prepared = std::invoke(std::forward<Prepare>(prepare));
             outcome.result = prepared->result;
             const bool install = std::invoke(std::forward<F>(decision), outcome.result);
