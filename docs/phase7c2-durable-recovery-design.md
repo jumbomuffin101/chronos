@@ -237,3 +237,10 @@ arbitrary exchange snapshot, exact replay and a proven process-wide
 publication guard. Neither milestone promises authenticated sessions,
 exactly-once client delivery, replicated availability or recovery from
 undetected corruption.
+
+## Implementation status update
+
+Phase 7C.2A.3b currently provides only an experimental read-only structural
+inspector. It does not implement a durable journal, manifest publication,
+durable owner authorization or restart recovery. See
+[the current scope](phase7c2a3b-journal-design.md).

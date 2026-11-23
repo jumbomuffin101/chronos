@@ -53,6 +53,10 @@ On Linux/WSL, run `./build/debug/chronos_gateway 8088` in one terminal and `./bu
 
 For an optimized build use `cmake --preset release` and `cmake --build --preset release`. For AddressSanitizer and UndefinedBehaviorSanitizer use `cmake --preset sanitizers`, `cmake --build --preset sanitizers`, and `ctest --preset sanitizers` on a supported Linux GCC/Clang toolchain. See [development](docs/development.md) for formatting and dependency details.
 
+The experimental `chronos_journal_inspect JOURNAL MANIFEST` checks a bounded
+provisional record envelope only. There is no durable journal writer or durable
+gateway mode; see the [inspection design](docs/phase7c2a3b-journal-design.md).
+
 ### Local dashboard
 
 With Node.js 22.22.2, the Debug gateway built, and `npm ci` run in `web`, start all three local services with:

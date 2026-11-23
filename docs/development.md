@@ -29,6 +29,10 @@ the [Phase 7A report](phase7a-implementation-report.md).
 
 Run `bash scripts/format.sh --check` to verify formatting or `bash scripts/format.sh --fix` to apply it. The sanitizer preset enables ASan and UBSan for project executables on supported Linux GCC/Clang toolchains. Debug and Release use separate build directories.
 
+`chronos_journal_inspect JOURNAL MANIFEST` is a read-only, experimental
+envelope checker, not a durable writer, outcome verifier or recovery tool. Its
+provisional input format and limits are in [the journal design](phase7c2a3b-journal-design.md).
+
 Identifiers are distinct explicit types. Prices are signed integer ticks, not currency units; instrument-specific tick sizes are not modeled yet. Order construction throws `std::invalid_argument` for zero quantity, invalid side or type, nonpositive limit price, or nonzero market price. The matching engine rejects duplicate active IDs and assigns its own command, event and trade counters. Trade is a passive record; the engine generates executions.
 
 Sequence numbers and quantities currently share an unsigned 64-bit representation, so the compiler does not distinguish them; identifiers are distinct types. Callers must reject negative external quantities before conversion to `Quantity`, because an unsigned parameter cannot detect a value that has already wrapped. The book checks aggregate overflow and matching checks its counters. The Phase 1 `Order` itself remains immutable; book snapshots expose current resting quantity. Tick-size definitions, durable ID allocation and recovery remain future work.
