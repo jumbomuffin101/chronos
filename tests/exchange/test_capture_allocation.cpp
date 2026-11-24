@@ -68,6 +68,7 @@ TEST(PublicCaptureAllocation, AdministrativePreparationAllocationSweepIsAtomic) 
         owner.bind();
         ASSERT_TRUE(owner.open_session(1));
         const auto before = owner.exact_continuation_state(4096);
+        const auto sequence_before = owner.diagnostic_mutation_index();
         exchange::RiskLimits limits;
         limits.max_order_quantity = 1;
         allocations_until_failure = index;
@@ -81,12 +82,26 @@ TEST(PublicCaptureAllocation, AdministrativePreparationAllocationSweepIsAtomic) 
             allocations_until_failure = -1;
             ++failures;
             EXPECT_EQ(owner.exact_continuation_state(4096), before);
+            EXPECT_EQ(owner.diagnostic_mutation_index(), sequence_before);
         }
         allocations_until_failure = -1;
         EXPECT_TRUE(owner.finish());
     }
     EXPECT_TRUE(completed);
     EXPECT_GT(failures, 0);
+}
+
+TEST(PublicCaptureAllocation, DiagnosticIndexExhaustionFailsBeforeMutation) {
+    using namespace chronos;
+    exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    ASSERT_TRUE(owner.open_session(1));
+    const auto before = owner.exact_continuation_state(4096);
+    owner.seed_diagnostic_index_for_test(std::numeric_limits<std::uint64_t>::max());
+    EXPECT_THROW(static_cast<void>(owner.open_session(2)), std::overflow_error);
+    EXPECT_THROW(owner.pop(1), std::overflow_error);
+    EXPECT_EQ(owner.exact_continuation_state(4096), before);
+    EXPECT_TRUE(owner.finish());
 }
 void operator delete(void *p) noexcept { std::free(p); }
 void operator delete(void *p, std::size_t) noexcept { std::free(p); }

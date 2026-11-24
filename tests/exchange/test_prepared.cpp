@@ -5,6 +5,107 @@
 
 using namespace chronos;
 
+TEST(PreparedExchange, DiagnosticIndexCountsRejectionAndNoOpButNotThrowOrAbort) {
+    exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    ASSERT_TRUE(owner.open_session(1));
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 1U);
+    EXPECT_FALSE(owner.open_session(1));
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 2U);
+    owner.pop(1);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 3U);
+    const auto before = owner.exact_continuation_state(4096);
+    EXPECT_THROW(static_cast<void>(owner.with_prepared_close_session(
+                     1, [](exchange::Result) -> bool { throw std::runtime_error("abort"); })),
+                 std::runtime_error);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 3U);
+    EXPECT_EQ(owner.exact_continuation_state(4096), before);
+    const auto rejected = owner.with_prepared_close_session(999, [](exchange::Result result) {
+        EXPECT_EQ(result, exchange::Result::InvalidOrder);
+        return true;
+    });
+    EXPECT_FALSE(rejected.installed);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 4U);
+    EXPECT_EQ(owner.exact_continuation_state(4096), before);
+    EXPECT_TRUE(owner.finish());
+    EXPECT_THROW(static_cast<void>(owner.open_session(2)), std::logic_error);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 4U);
+}
+
+TEST(PreparedExchange, DiagnosticOrderTracksCompletedMutationsAndPreservesAbort) {
+    exchange::LiveExchangeOwner owner(3, 16, 16, 16, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 0U);
+    ASSERT_TRUE(owner.open_session(1));
+    exchange::RiskLimits limits;
+    ASSERT_TRUE(owner.configure_risk(1, limits));
+    ASSERT_TRUE(owner.subscribe(1, core::SymbolId{1}));
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 3U);
+    ASSERT_EQ(
+        owner.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit, 100, 2),
+        exchange::Result::Accepted);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 4U);
+    const auto report = owner.front(1);
+    ASSERT_TRUE(report);
+    owner.pop(1);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 5U);
+    const auto before = owner.exact_continuation_state(4096);
+    const auto aborted = owner.with_prepared_close_session(1, [&](exchange::Result result) {
+        EXPECT_EQ(result, exchange::Result::Accepted);
+        EXPECT_EQ(owner.diagnostic_mutation_index(), 5U);
+        EXPECT_THROW(owner.pop(1), std::logic_error);
+        return false;
+    });
+    EXPECT_FALSE(aborted.installed);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 5U);
+    EXPECT_EQ(owner.exact_continuation_state(4096), before);
+    ASSERT_TRUE(
+        owner.with_prepared_close_session(1, [](exchange::Result) { return true; }).installed);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 6U);
+    ASSERT_TRUE(owner.find(1, 1));
+    EXPECT_EQ(owner.find(1, 1)->quantity, 2U);
+    EXPECT_FALSE(owner.market_front(1));
+    ASSERT_TRUE(owner.open_session(2));
+    ASSERT_EQ(
+        owner.submit(2, 1, 1, core::SymbolId{1}, core::Side::Sell, core::OrderType::Market, 0, 1),
+        exchange::Result::Accepted);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 8U);
+    EXPECT_EQ(owner.find(1, 1)->quantity, 1U);
+    const auto rejected = owner.cancel(2, 2, 999);
+    EXPECT_NE(rejected, exchange::Result::Accepted);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 9U);
+    EXPECT_TRUE(owner.finish());
+}
+
+TEST(PreparedExchange, DiagnosticOrderIncludesSubscriberGapConsumption) {
+    exchange::LiveExchangeOwner owner(1, 64, 128, 64, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    ASSERT_TRUE(owner.open_session(1));
+    ASSERT_TRUE(owner.subscribe(1, core::SymbolId{1}));
+    for (std::uint64_t id = 1; id <= 34; ++id)
+        ASSERT_EQ(owner.submit(1, id, id, core::SymbolId{1}, core::Side::Buy,
+                               core::OrderType::Limit, static_cast<core::Price>(100 + id), 1),
+                  exchange::Result::Accepted);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 36U);
+    for (int i = 0; i < 32; ++i) {
+        const auto event = owner.market_front(1);
+        ASSERT_TRUE(event);
+        EXPECT_NE(event->kind, exchange::MarketKind::Gap);
+        owner.market_pop(1, *event);
+    }
+    const auto gap = owner.market_front(1);
+    ASSERT_TRUE(gap);
+    EXPECT_EQ(gap->kind, exchange::MarketKind::Gap);
+    owner.market_pop(1, *gap);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 69U);
+    EXPECT_FALSE(owner.market_front(1));
+    ASSERT_TRUE(owner.subscribe(1, core::SymbolId{1}));
+    ASSERT_TRUE(owner.market_front(1));
+    EXPECT_EQ(owner.market_front(1)->kind, exchange::MarketKind::Snapshot);
+    EXPECT_EQ(owner.diagnostic_mutation_index(), 70U);
+    EXPECT_TRUE(owner.finish());
+}
+
 TEST(PreparedExchange, AdministrativeStagingAbortsAndInstallsWithoutExposingCandidates) {
     exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
     owner.bind();

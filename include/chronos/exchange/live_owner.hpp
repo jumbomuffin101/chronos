@@ -4,8 +4,10 @@
 
 #include <atomic>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace chronos::exchange {
@@ -23,6 +25,29 @@ class LiveExchangeOwner final {
     static const std::shared_ptr<const Context> &current_context() {
         static thread_local const auto context = std::make_shared<const Context>();
         return context;
+    }
+    template <class F> auto dispatch_mutation(F &&operation, const bool *record = nullptr) {
+        require_mutation();
+        if (dispatching_)
+            throw std::logic_error("reentrant owner mutation");
+        if (diagnostic_index_ == std::numeric_limits<std::uint64_t>::max())
+            throw std::overflow_error("diagnostic mutation index exhausted");
+        dispatching_ = true;
+        struct Reset {
+            bool &active;
+            ~Reset() { active = false; }
+        } reset{dispatching_};
+        if constexpr (std::is_void_v<std::invoke_result_t<F>>) {
+            std::invoke(std::forward<F>(operation));
+            if (!record || *record)
+                ++diagnostic_index_;
+        } else {
+            static_assert(std::is_nothrow_move_constructible_v<std::invoke_result_t<F>>);
+            auto result = std::invoke(std::forward<F>(operation));
+            if (!record || *record)
+                ++diagnostic_index_;
+            return result;
+        }
     }
 
   public:
@@ -59,7 +84,7 @@ class LiveExchangeOwner final {
     // Called by the event loop after its last exchange access. Once stopped,
     // copied read-only inspection is permitted from other contexts.
     [[nodiscard]] bool finish() noexcept {
-        if (!is_owner() || frozen_)
+        if (!is_owner() || frozen_ || dispatching_)
             return false;
         // Disable every mutation before releasing exclusive allocation authority.
         phase_.store(Phase::Finishing, std::memory_order_release);
@@ -69,49 +94,48 @@ class LiveExchangeOwner final {
     }
 
     [[nodiscard]] bool open_session(std::uint64_t session) {
-        require_mutation();
-        return exchange_.open_session(session);
+        return dispatch_mutation([&] { return exchange_.open_session(session); });
     }
 #ifdef CHRONOS_TEST_ID_SEAM
+    void seed_diagnostic_index_for_test(std::uint64_t index) {
+        require_mutation();
+        if (dispatching_)
+            throw std::logic_error("reentrant owner mutation");
+        diagnostic_index_ = index;
+    }
     [[nodiscard]] bool seed_process_id_for_test(std::uint64_t last) {
         require_mutation();
         return exchange_.seed_process_id_for_test(last);
     }
 #endif
     [[nodiscard]] bool configure_risk(std::uint64_t session, const RiskLimits &limits) {
-        require_mutation();
-        return exchange_.configure_risk(session, limits);
+        return dispatch_mutation([&] { return exchange_.configure_risk(session, limits); });
     }
     [[nodiscard]] bool set_killed(std::uint64_t session, bool killed) {
-        require_mutation();
-        return exchange_.set_killed(session, killed);
+        return dispatch_mutation([&] { return exchange_.set_killed(session, killed); });
     }
     [[nodiscard]] bool subscribe(std::uint64_t session, core::SymbolId symbol) {
-        require_mutation();
-        return exchange_.subscribe(session, symbol);
+        return dispatch_mutation([&] { return exchange_.subscribe(session, symbol); });
     }
     [[nodiscard]] bool unsubscribe(std::uint64_t session, core::SymbolId symbol) {
-        require_mutation();
-        return exchange_.unsubscribe(session, symbol);
+        return dispatch_mutation([&] { return exchange_.unsubscribe(session, symbol); });
     }
     void market_pop(std::uint64_t session, const MarketEvent &event) {
-        require_mutation();
-        exchange_.market_pop(session, event);
+        dispatch_mutation([&] { exchange_.market_pop(session, event); });
     }
     void close_session(std::uint64_t session) {
-        require_mutation();
-        exchange_.close_session(session);
+        dispatch_mutation([&] { exchange_.close_session(session); });
     }
     [[nodiscard]] Result submit(std::uint64_t session, std::uint64_t request, std::uint64_t client,
                                 core::SymbolId symbol, core::Side side, core::OrderType type,
                                 core::Price price, core::Quantity quantity) {
-        require_mutation();
-        return exchange_.submit(session, request, client, symbol, side, type, price, quantity);
+        return dispatch_mutation([&] {
+            return exchange_.submit(session, request, client, symbol, side, type, price, quantity);
+        });
     }
     [[nodiscard]] Result cancel(std::uint64_t session, std::uint64_t request,
                                 std::uint64_t client) {
-        require_mutation();
-        return exchange_.cancel(session, request, client);
+        return dispatch_mutation([&] { return exchange_.cancel(session, request, client); });
     }
     // Gateway-facing non-durable authorization: no caller-supplied callback
     // runs between preparation and installation. Rejections are authoritative
@@ -150,8 +174,13 @@ class LiveExchangeOwner final {
             [&] { return exchange_.prepare_cancel(session, request, client, true); });
     }
     void pop(std::uint64_t session) {
-        require_mutation();
-        exchange_.pop(session);
+        dispatch_mutation([&] { exchange_.pop(session); });
+    }
+    // Counts completed owner calls, including business rejections and no-ops.
+    // Not a journal LSN or a complete exchange/process mutation sequence.
+    [[nodiscard]] std::uint64_t diagnostic_mutation_index() const {
+        require_read();
+        return diagnostic_index_;
     }
     [[nodiscard]] std::optional<Report> front(std::uint64_t session) const {
         require_read();
@@ -210,11 +239,17 @@ class LiveExchangeOwner final {
     }
 
     // Administrative staging only. InvalidOrder means the existing boolean
-    // operation rejected; no storage authorization or operation index exists.
+    // operation rejected; no storage authorization exists.
     template <class F>
     [[nodiscard]] PreparedScopeResult with_prepared_open_session(std::uint64_t session,
                                                                  F &&decision) {
         return prepared_scope([&] { return exchange_.prepare_open_session(session); },
+                              std::forward<F>(decision));
+    }
+    template <class F>
+    [[nodiscard]] PreparedScopeResult with_prepared_close_session(std::uint64_t session,
+                                                                  F &&decision) {
+        return prepared_scope([&] { return exchange_.prepare_close_session(session); },
                               std::forward<F>(decision));
     }
     template <class F>
@@ -238,19 +273,20 @@ class LiveExchangeOwner final {
 
   private:
     template <class Prepare> InstalledSummary summarized_scope(Prepare &&prepare) {
-        require_mutation();
-        if (!exchange_.exclusive_)
-            throw std::logic_error("prepared scope requires exclusive registration");
-        std::optional<InstalledSummary> summary;
-        with_frozen_state([&] {
-            auto prepared = std::invoke(std::forward<Prepare>(prepare));
-            summary.emplace(exchange_.summarize_prepared(*prepared));
-            if (summary->result_ == Result::Accepted) {
-                exchange_.install_prepared(*prepared);
-                summary->installed_ = true;
-            }
+        return dispatch_mutation([&] {
+            if (!exchange_.exclusive_)
+                throw std::logic_error("prepared scope requires exclusive registration");
+            std::optional<InstalledSummary> summary;
+            with_frozen_state([&] {
+                auto prepared = std::invoke(std::forward<Prepare>(prepare));
+                summary.emplace(exchange_.summarize_prepared(*prepared));
+                if (summary->result_ == Result::Accepted) {
+                    exchange_.install_prepared(*prepared);
+                    summary->installed_ = true;
+                }
+            });
+            return std::move(*summary);
         });
-        return std::move(*summary);
     }
     [[nodiscard]] static bool authorize_non_durable(Result result) {
 #ifdef CHRONOS_TEST_GATE_SEAM
@@ -263,24 +299,28 @@ class LiveExchangeOwner final {
     }
     template <class Prepare, class F>
     PreparedScopeResult prepared_scope(Prepare &&prepare, F &&decision) {
-        require_mutation();
-        if (!exchange_.exclusive_)
-            throw std::logic_error("prepared scope requires exclusive registration");
-        PreparedScopeResult outcome;
-        with_frozen_state([&] {
+        bool authorized = false;
+        return dispatch_mutation(
+            [&] {
+                if (!exchange_.exclusive_)
+                    throw std::logic_error("prepared scope requires exclusive registration");
+                PreparedScopeResult outcome;
+                with_frozen_state([&] {
 #ifdef CHRONOS_TEST_GATE_SEAM
-            if (test_before_prepare)
-                test_before_prepare(test_before_install_context);
+                    if (test_before_prepare)
+                        test_before_prepare(test_before_install_context);
 #endif
-            auto prepared = std::invoke(std::forward<Prepare>(prepare));
-            outcome.result = prepared->result;
-            const bool install = std::invoke(std::forward<F>(decision), outcome.result);
-            if (install && outcome.result == Result::Accepted) {
-                exchange_.install_prepared(*prepared);
-                outcome.installed = true;
-            }
-        });
-        return outcome;
+                    auto prepared = std::invoke(std::forward<Prepare>(prepare));
+                    outcome.result = prepared->result;
+                    authorized = std::invoke(std::forward<F>(decision), outcome.result);
+                    if (authorized && outcome.result == Result::Accepted) {
+                        exchange_.install_prepared(*prepared);
+                        outcome.installed = true;
+                    }
+                });
+                return outcome;
+            },
+            &authorized);
     }
     [[nodiscard]] bool is_owner() const noexcept {
         if (phase_.load(std::memory_order_acquire) != Phase::Active)
@@ -306,5 +346,7 @@ class LiveExchangeOwner final {
     std::shared_ptr<const Context> context_;
     std::atomic<Phase> phase_{Phase::Unbound};
     bool frozen_ = false;
+    bool dispatching_ = false;
+    std::uint64_t diagnostic_index_ = 0;
 };
 } // namespace chronos::exchange

@@ -216,6 +216,21 @@ std::unique_ptr<Exchange::Prepared> Exchange::prepare_risk_update(std::uint64_t 
     return prepared;
 }
 
+std::unique_ptr<Exchange::Prepared> Exchange::prepare_close_session(std::uint64_t session) {
+    if (!exclusive_)
+        throw std::logic_error("prepared session requires exclusive registration");
+    auto prepared = std::make_unique<Prepared>();
+    auto work = Exchange::isolated(max_sessions_, max_orders_, max_reports_, max_requests_,
+                                   state_->initial_feed_sequence);
+    work->state_ = state_->clone();
+    if (work->state_->sessions.contains(session)) {
+        work->close_session(session);
+        prepared->result = Result::Accepted;
+        prepared->candidate = std::move(work->state_);
+    }
+    return prepared;
+}
+
 std::unique_ptr<Exchange::Prepared>
 Exchange::prepare_submit(std::uint64_t session, std::uint64_t request, std::uint64_t client,
                          core::SymbolId symbol, core::Side side, core::OrderType type,

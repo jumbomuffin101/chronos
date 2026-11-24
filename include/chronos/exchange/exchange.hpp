@@ -303,6 +303,7 @@ class Exchange {
                                                            std::uint64_t client,
                                                            bool capture_public = false);
     [[nodiscard]] std::unique_ptr<Prepared> prepare_open_session(std::uint64_t session);
+    [[nodiscard]] std::unique_ptr<Prepared> prepare_close_session(std::uint64_t session);
     [[nodiscard]] std::unique_ptr<Prepared> prepare_risk_update(std::uint64_t session,
                                                                 const RiskLimits &limits);
     [[nodiscard]] InstalledSummary summarize_prepared(Prepared &prepared) const;
