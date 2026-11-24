@@ -90,6 +90,50 @@ struct RecipientReport {
     Report report;
 };
 
+// Derived from open resting orders, not a persisted reservation ledger.
+struct ExposureSnapshot {
+    std::int64_t position = 0;
+    std::uint64_t open_order_count = 0;
+    std::uint64_t open_notional = 0;
+    std::uint64_t symbol_buy_quantity = 0;
+    std::uint64_t symbol_sell_quantity = 0;
+};
+
+// Scalar limits and permission for this command's symbol. The full allowed
+// symbol list is not included, so this is not a complete policy snapshot.
+struct RiskPolicySnapshot {
+    std::uint64_t max_order_quantity;
+    std::uint64_t max_order_notional;
+    std::uint64_t max_open_notional;
+    std::size_t max_open_orders;
+    std::uint64_t max_abs_position;
+    core::Price max_market_price;
+    bool killed;
+    bool symbol_allowed;
+};
+
+struct ParticipantEffect {
+    std::uint64_t session;
+    ExposureSnapshot before;
+    ExposureSnapshot after;
+    RiskPolicySnapshot policy;
+};
+
+struct OwnershipSnapshot {
+    std::uint64_t session;
+    std::uint64_t client_order_id;
+    std::uint64_t request_id;
+    std::uint32_t symbol;
+    bool open;
+    std::optional<orderbook::OrderSnapshot> resting;
+};
+
+struct OwnershipEffect {
+    std::uint64_t internal_order_id;
+    std::optional<OwnershipSnapshot> before;
+    std::optional<OwnershipSnapshot> after;
+};
+
 struct SymbolCounterSnapshot {
     std::uint32_t symbol;
     bool engine_present;
@@ -139,6 +183,14 @@ class InstalledSummary final {
     [[nodiscard]] std::span<const MarketEvent> public_events() const noexcept {
         return public_events_;
     }
+    // Sorted by session; includes the initiator and every trade participant.
+    [[nodiscard]] std::span<const ParticipantEffect> participant_effects() const noexcept {
+        return participant_effects_;
+    }
+    // Sorted by internal ID; only orders referenced by this command's reports.
+    [[nodiscard]] std::span<const OwnershipEffect> ownership_effects() const noexcept {
+        return ownership_effects_;
+    }
 
   private:
     friend class Exchange;
@@ -155,6 +207,8 @@ class InstalledSummary final {
     std::vector<AuditTrade> trades_;
     std::vector<RecipientReport> reports_;
     std::vector<MarketEvent> public_events_;
+    std::vector<ParticipantEffect> participant_effects_;
+    std::vector<OwnershipEffect> ownership_effects_;
 };
 
 class Exchange {

@@ -339,6 +339,132 @@ InstalledSummary Exchange::summarize_prepared(Prepared &prepared) const {
     for (std::size_t i = 0; i < summary.reports_.size(); ++i)
         if (summary.reports_[i].report.sequence != state_->event + i + 1)
             throw std::logic_error("prepared report sequence mismatch");
+    // At most two participants per trade plus the initiator. All work and
+    // checked accumulation happen on private state before installation.
+    if (!prepared.symbol)
+        throw std::logic_error("accepted preparation has no symbol");
+    std::vector<std::uint64_t> participants;
+    participants.reserve(1 + 2 * trade_count);
+    participants.push_back(prepared.session);
+    for (const auto &trade : summary.trades_) {
+        participants.push_back(trade.buyer_session);
+        participants.push_back(trade.seller_session);
+    }
+    std::sort(participants.begin(), participants.end());
+    participants.erase(std::unique(participants.begin(), participants.end()), participants.end());
+    summary.participant_effects_.reserve(participants.size());
+    for (const auto id : participants) {
+        const auto before = position_snapshot(*state_, id, *prepared.symbol);
+        const auto after = position_snapshot(candidate, id, *prepared.symbol);
+        if (!before || !after)
+            throw std::logic_error("prepared trade participant missing session");
+        const auto &account = state_->sessions.at(id);
+        const auto &next_account = candidate.sessions.at(id);
+        const auto &limits = account.limits;
+        const auto &next_limits = next_account.limits;
+        if (account.killed != next_account.killed ||
+            limits.max_order_quantity != next_limits.max_order_quantity ||
+            limits.max_order_notional != next_limits.max_order_notional ||
+            limits.max_open_notional != next_limits.max_open_notional ||
+            limits.max_open_orders != next_limits.max_open_orders ||
+            limits.max_abs_position != next_limits.max_abs_position ||
+            limits.max_market_price != next_limits.max_market_price ||
+            limits.allowed_symbols != next_limits.allowed_symbols)
+            throw std::logic_error("prepared command changed risk policy");
+        const bool allowed = limits.allowed_symbols.empty() ||
+                             std::find(limits.allowed_symbols.begin(), limits.allowed_symbols.end(),
+                                       *prepared.symbol) != limits.allowed_symbols.end();
+        summary.participant_effects_.push_back(
+            {id, ExposureSnapshot{*before}, ExposureSnapshot{*after},
+             RiskPolicySnapshot{limits.max_order_quantity, limits.max_order_notional,
+                                limits.max_open_notional, limits.max_open_orders,
+                                limits.max_abs_position, limits.max_market_price, account.killed,
+                                allowed}});
+    }
+    const auto accumulate_exposure = [&](const State &source, bool after) {
+        for (const auto &order : source.orders) {
+            if (!order.open)
+                continue;
+            const auto found = std::lower_bound(
+                summary.participant_effects_.begin(), summary.participant_effects_.end(),
+                order.session, [](const ParticipantEffect &effect, std::uint64_t id) {
+                    return effect.session < id;
+                });
+            if (found == summary.participant_effects_.end() || found->session != order.session)
+                continue;
+            const auto engine = source.engines.find(order.symbol);
+            if (engine == source.engines.end())
+                throw std::logic_error("open order missing engine");
+            const auto live = engine->second->find(core::OrderId{order.internal});
+            if (!live || live->price <= 0 || live->quantity == 0)
+                throw std::logic_error("invalid open order exposure");
+            auto &exposure = after ? found->after : found->before;
+            const auto price = static_cast<std::uint64_t>(live->price);
+            if (price > std::numeric_limits<std::uint64_t>::max() / live->quantity)
+                throw std::overflow_error("open order notional overflow");
+            const auto notional = price * live->quantity;
+            if (notional > std::numeric_limits<std::uint64_t>::max() - exposure.open_notional ||
+                exposure.open_order_count == std::numeric_limits<std::uint64_t>::max())
+                throw std::overflow_error("aggregate open exposure overflow");
+            exposure.open_notional += notional;
+            ++exposure.open_order_count;
+            if (order.symbol == *prepared.symbol) {
+                auto &quantity = live->side == core::Side::Buy ? exposure.symbol_buy_quantity
+                                                               : exposure.symbol_sell_quantity;
+                if (live->quantity > std::numeric_limits<std::uint64_t>::max() - quantity)
+                    throw std::overflow_error("symbol exposure overflow");
+                quantity += live->quantity;
+            }
+        }
+    };
+    accumulate_exposure(*state_, false);
+    accumulate_exposure(candidate, true);
+    std::vector<std::uint64_t> touched_orders;
+    touched_orders.reserve(summary.reports_.size());
+    for (const auto &report : summary.reports_) {
+        if (report.report.internal_order_id == 0)
+            throw std::logic_error("prepared report missing order identity");
+        touched_orders.push_back(report.report.internal_order_id);
+    }
+    std::sort(touched_orders.begin(), touched_orders.end());
+    touched_orders.erase(std::unique(touched_orders.begin(), touched_orders.end()),
+                         touched_orders.end());
+    summary.ownership_effects_.reserve(touched_orders.size());
+    for (const auto id : touched_orders)
+        summary.ownership_effects_.push_back({id, std::nullopt, std::nullopt});
+    const auto capture_ownership = [&](const State &source, bool after) {
+        for (const auto &order : source.orders) {
+            const auto found = std::lower_bound(
+                summary.ownership_effects_.begin(), summary.ownership_effects_.end(),
+                order.internal, [](const OwnershipEffect &effect, std::uint64_t id) {
+                    return effect.internal_order_id < id;
+                });
+            if (found == summary.ownership_effects_.end() ||
+                found->internal_order_id != order.internal)
+                continue;
+            std::optional<orderbook::OrderSnapshot> resting;
+            if (order.open) {
+                const auto engine = source.engines.find(order.symbol);
+                if (engine == source.engines.end() ||
+                    !(resting = engine->second->find(core::OrderId{order.internal})))
+                    throw std::logic_error("open ownership missing resting order");
+            }
+            auto &slot = after ? found->after : found->before;
+            if (slot)
+                throw std::logic_error("duplicate ownership identity");
+            slot = OwnershipSnapshot{order.session, order.client, order.request,
+                                     order.symbol,  order.open,   resting};
+        }
+    };
+    capture_ownership(*state_, false);
+    capture_ownership(candidate, true);
+    for (const auto &effect : summary.ownership_effects_) {
+        if (!effect.after ||
+            (effect.before && (effect.before->session != effect.after->session ||
+                               effect.before->client_order_id != effect.after->client_order_id ||
+                               effect.before->symbol != effect.after->symbol)))
+            throw std::logic_error("prepared ownership identity mismatch");
+    }
     if (prepared.reservation)
         summary.new_id_ = prepared.reservation->id();
     if (summary.new_id_)
