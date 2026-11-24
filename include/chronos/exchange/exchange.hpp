@@ -302,6 +302,9 @@ class Exchange {
                                                            std::uint64_t request,
                                                            std::uint64_t client,
                                                            bool capture_public = false);
+    [[nodiscard]] std::unique_ptr<Prepared> prepare_open_session(std::uint64_t session);
+    [[nodiscard]] std::unique_ptr<Prepared> prepare_risk_update(std::uint64_t session,
+                                                                const RiskLimits &limits);
     [[nodiscard]] InstalledSummary summarize_prepared(Prepared &prepared) const;
     void install_prepared(Prepared &prepared) noexcept;
     // Shared leases outlive state_; an exclusive owner may release at terminal stop.

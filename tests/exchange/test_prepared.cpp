@@ -5,6 +5,101 @@
 
 using namespace chronos;
 
+TEST(PreparedExchange, AdministrativeStagingAbortsAndInstallsWithoutExposingCandidates) {
+    exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    const auto initial = owner.exact_continuation_state(4096);
+    const auto aborted = owner.with_prepared_open_session(1, [&](exchange::Result result) {
+        EXPECT_EQ(result, exchange::Result::Accepted);
+        EXPECT_EQ(owner.verification_state()[4], 0U);
+        EXPECT_THROW(static_cast<void>(owner.open_session(1)), std::logic_error);
+        return false;
+    });
+    EXPECT_FALSE(aborted.installed);
+    EXPECT_EQ(owner.exact_continuation_state(4096), initial);
+    EXPECT_THROW(static_cast<void>(owner.with_prepared_open_session(
+                     1, [](exchange::Result) -> bool { throw std::runtime_error("abort"); })),
+                 std::runtime_error);
+    EXPECT_EQ(owner.exact_continuation_state(4096), initial);
+    ASSERT_TRUE(
+        owner.with_prepared_open_session(1, [](exchange::Result) { return true; }).installed);
+    const auto opened = owner.exact_continuation_state(4096);
+    const auto duplicate =
+        owner.with_prepared_open_session(1, [](exchange::Result) { return true; });
+    EXPECT_EQ(duplicate.result, exchange::Result::InvalidOrder);
+    EXPECT_FALSE(duplicate.installed);
+    EXPECT_EQ(owner.exact_continuation_state(4096), opened);
+    exchange::RiskLimits limits;
+    limits.max_order_quantity = 1;
+    const auto risk_abort =
+        owner.with_prepared_risk_update(1, limits, [](exchange::Result) { return false; });
+    EXPECT_FALSE(risk_abort.installed);
+    EXPECT_EQ(owner.exact_continuation_state(4096), opened);
+    ASSERT_TRUE(owner.with_prepared_risk_update(1, limits, [](exchange::Result) { return true; })
+                    .installed);
+    EXPECT_EQ(
+        owner.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit, 100, 2),
+        exchange::Result::RiskQuantity);
+    ASSERT_EQ(
+        owner.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit, 100, 1),
+        exchange::Result::Accepted);
+    const auto resting = owner.exact_continuation_state(4096);
+    EXPECT_FALSE(owner.with_prepared_risk_update(1, limits, [](exchange::Result) { return true; })
+                     .installed);
+    EXPECT_EQ(owner.exact_continuation_state(4096), resting);
+    EXPECT_TRUE(owner.finish());
+}
+
+TEST(PreparedExchange, AdministrativeStagingRejectsInvalidContextAndIds) {
+    {
+        exchange::LiveExchangeOwner shared;
+        shared.bind();
+        EXPECT_THROW(static_cast<void>(shared.with_prepared_open_session(
+                         1, [](exchange::Result) { return true; })),
+                     std::logic_error);
+        exchange::RiskLimits limits;
+        EXPECT_THROW(static_cast<void>(shared.with_prepared_risk_update(
+                         1, limits, [](exchange::Result) { return true; })),
+                     std::logic_error);
+        EXPECT_TRUE(shared.finish());
+    }
+    exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    const auto initial = owner.exact_continuation_state(4096);
+    const auto invalid = owner.with_prepared_open_session(0, [](exchange::Result) { return true; });
+    EXPECT_EQ(invalid.result, exchange::Result::InvalidOrder);
+    EXPECT_FALSE(invalid.installed);
+    EXPECT_EQ(owner.exact_continuation_state(4096), initial);
+    bool denied = false;
+    std::thread other([&] {
+        try {
+            static_cast<void>(
+                owner.with_prepared_open_session(1, [](exchange::Result) { return true; }));
+        } catch (const std::logic_error &) {
+            denied = true;
+        }
+    });
+    other.join();
+    EXPECT_TRUE(denied);
+    EXPECT_EQ(owner.exact_continuation_state(4096), initial);
+    ASSERT_TRUE(owner
+                    .with_prepared_open_session(
+                        1,
+                        [&](exchange::Result result) {
+                            EXPECT_EQ(result, exchange::Result::Accepted);
+                            EXPECT_THROW(static_cast<void>(owner.with_prepared_open_session(
+                                             2, [](exchange::Result) { return true; })),
+                                         std::logic_error);
+                            return true;
+                        })
+                    .installed);
+    EXPECT_FALSE(
+        owner.with_prepared_open_session(1, [](exchange::Result) { return true; }).installed);
+    EXPECT_TRUE(
+        owner.with_prepared_open_session(2, [](exchange::Result) { return true; }).installed);
+    EXPECT_TRUE(owner.finish());
+}
+
 TEST(PreparedExchange, AbortAndExceptionPreserveStateAndReservation) {
     std::uint64_t prior_id = 0;
     {

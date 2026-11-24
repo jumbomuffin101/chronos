@@ -209,6 +209,21 @@ class LiveExchangeOwner final {
                               std::forward<F>(decision));
     }
 
+    // Administrative staging only. InvalidOrder means the existing boolean
+    // operation rejected; no storage authorization or operation index exists.
+    template <class F>
+    [[nodiscard]] PreparedScopeResult with_prepared_open_session(std::uint64_t session,
+                                                                 F &&decision) {
+        return prepared_scope([&] { return exchange_.prepare_open_session(session); },
+                              std::forward<F>(decision));
+    }
+    template <class F>
+    [[nodiscard]] PreparedScopeResult
+    with_prepared_risk_update(std::uint64_t session, const RiskLimits &limits, F &&decision) {
+        return prepared_scope([&] { return exchange_.prepare_risk_update(session, limits); },
+                              std::forward<F>(decision));
+    }
+
     // A synchronous exclusion primitive only: no prepared state or durable
     // publication exists. The callback must not destroy this owner.
     template <class F> void with_frozen_state(F &&callback) {

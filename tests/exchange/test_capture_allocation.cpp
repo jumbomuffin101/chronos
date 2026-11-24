@@ -58,6 +58,36 @@ TEST(PublicCaptureAllocation, SummaryAllocationSweepNeverPublishesPartialEffects
     EXPECT_TRUE(completed);
     EXPECT_GT(failures, 0);
 }
+
+TEST(PublicCaptureAllocation, AdministrativePreparationAllocationSweepIsAtomic) {
+    using namespace chronos;
+    bool completed = false;
+    int failures = 0;
+    for (int index = 0; index < 512 && !completed; ++index) {
+        exchange::LiveExchangeOwner owner(2, 16, 32, 16, exchange::AllocationMode::Exclusive);
+        owner.bind();
+        ASSERT_TRUE(owner.open_session(1));
+        const auto before = owner.exact_continuation_state(4096);
+        exchange::RiskLimits limits;
+        limits.max_order_quantity = 1;
+        allocations_until_failure = index;
+        try {
+            const auto result =
+                owner.with_prepared_risk_update(1, limits, [](exchange::Result) { return true; });
+            allocations_until_failure = -1;
+            ASSERT_TRUE(result.installed);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            ++failures;
+            EXPECT_EQ(owner.exact_continuation_state(4096), before);
+        }
+        allocations_until_failure = -1;
+        EXPECT_TRUE(owner.finish());
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GT(failures, 0);
+}
 void operator delete(void *p) noexcept { std::free(p); }
 void operator delete(void *p, std::size_t) noexcept { std::free(p); }
 void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
