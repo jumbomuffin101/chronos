@@ -46,3 +46,36 @@ TEST(PreparedGlobalExhaustion, LastIdCanAbortThenCommitWithoutWrapping) {
     EXPECT_FALSE(owner.find(1, 1));
     EXPECT_TRUE(owner.finish());
 }
+
+TEST(PreparedGlobalExhaustion, SummaryReportsHighWaterAtExhaustion) {
+    constexpr auto max = std::numeric_limits<std::uint64_t>::max();
+    exchange::LiveExchangeOwner owner(2, 16, 32, 32, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    ASSERT_TRUE(owner.open_session(1));
+    ASSERT_TRUE(owner.seed_process_id_for_test(max - 1));
+    const auto accepted = owner.submit_with_summary(1, 1, 1, core::SymbolId{1}, core::Side::Buy,
+                                                    core::OrderType::Limit, 100, 1);
+    ASSERT_TRUE(accepted.installed());
+    ASSERT_TRUE(accepted.allocator_before());
+    ASSERT_TRUE(accepted.allocator_after());
+    EXPECT_EQ(*accepted.allocator_before(), max - 1);
+    EXPECT_EQ(*accepted.allocator_after(), max);
+    ASSERT_TRUE(accepted.new_order_id());
+    EXPECT_EQ(*accepted.new_order_id(), max);
+    const auto before = owner.exact_continuation_state(4096);
+    const auto exhausted = owner.submit_with_summary(1, 2, 2, core::SymbolId{1}, core::Side::Buy,
+                                                     core::OrderType::Limit, 100, 1);
+    EXPECT_EQ(exhausted.result(), exchange::Result::CounterExhausted);
+    EXPECT_FALSE(exhausted.installed());
+    EXPECT_FALSE(exhausted.new_order_id());
+    ASSERT_TRUE(exhausted.allocator_before());
+    ASSERT_TRUE(exhausted.allocator_after());
+    EXPECT_EQ(*exhausted.allocator_before(), max);
+    EXPECT_EQ(*exhausted.allocator_after(), max);
+    EXPECT_EQ(owner.exact_continuation_state(4096), before);
+    const auto cancelled = owner.cancel_with_summary(1, 3, 1);
+    ASSERT_TRUE(cancelled.installed());
+    EXPECT_EQ(*cancelled.allocator_before(), max);
+    EXPECT_EQ(*cancelled.allocator_after(), max);
+    EXPECT_TRUE(owner.finish());
+}

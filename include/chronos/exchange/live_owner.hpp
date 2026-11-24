@@ -133,6 +133,22 @@ class LiveExchangeOwner final {
         return prepared_scope([&] { return exchange_.prepare_cancel(session, request, client); },
                               authorize_non_durable);
     }
+    // Builds a bounded partial summary before installation and returns it only
+    // afterward. No callback or install capability is exposed to the caller.
+    [[nodiscard]] InstalledSummary submit_with_summary(std::uint64_t session, std::uint64_t request,
+                                                       std::uint64_t client, core::SymbolId symbol,
+                                                       core::Side side, core::OrderType type,
+                                                       core::Price price, core::Quantity quantity) {
+        return summarized_scope([&] {
+            return exchange_.prepare_submit(session, request, client, symbol, side, type, price,
+                                            quantity, true);
+        });
+    }
+    [[nodiscard]] InstalledSummary cancel_with_summary(std::uint64_t session, std::uint64_t request,
+                                                       std::uint64_t client) {
+        return summarized_scope(
+            [&] { return exchange_.prepare_cancel(session, request, client, true); });
+    }
     void pop(std::uint64_t session) {
         require_mutation();
         exchange_.pop(session);
@@ -206,6 +222,21 @@ class LiveExchangeOwner final {
     }
 
   private:
+    template <class Prepare> InstalledSummary summarized_scope(Prepare &&prepare) {
+        require_mutation();
+        if (!exchange_.exclusive_)
+            throw std::logic_error("prepared scope requires exclusive registration");
+        std::optional<InstalledSummary> summary;
+        with_frozen_state([&] {
+            auto prepared = std::invoke(std::forward<Prepare>(prepare));
+            summary.emplace(exchange_.summarize_prepared(*prepared));
+            if (summary->result_ == Result::Accepted) {
+                exchange_.install_prepared(*prepared);
+                summary->installed_ = true;
+            }
+        });
+        return std::move(*summary);
+    }
     [[nodiscard]] static bool authorize_non_durable(Result result) {
 #ifdef CHRONOS_TEST_GATE_SEAM
         if (result == Result::Accepted && test_before_install)

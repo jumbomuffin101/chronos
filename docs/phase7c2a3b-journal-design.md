@@ -62,3 +62,7 @@ handling, journal sync, same-directory temporary manifest, file sync, rename,
 directory sync, fault and process-crash tests, durable-prefix tail policy,
 restart admission gate and storage benchmarks remain unimplemented. No local
 filesystem or WSL mount is qualified for durability by these tests.
+
+The follow-on [canonical decision design](phase7c2a3b1-canonical-decision-design.md)
+distinguishes its fixed command-input encoding from the still-unimplemented
+authoritative staged outcome and documents the allocator ownership choices.

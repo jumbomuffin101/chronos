@@ -48,6 +48,8 @@ struct Exchange::State {
     std::map<std::uint32_t, std::uint64_t> feed_sequences;
     std::uint64_t initial_feed_sequence = 0;
     std::uint64_t command = 0, event = 0;
+    // Non-owning, private to a synchronous candidate transaction. Never live.
+    std::vector<MarketEvent> *public_capture = nullptr;
 
     std::unique_ptr<State> clone() const {
         auto out = std::make_unique<State>();
@@ -58,6 +60,7 @@ struct Exchange::State {
         out->initial_feed_sequence = initial_feed_sequence;
         out->command = command;
         out->event = event;
+        out->public_capture = public_capture;
         for (const auto &[symbol, engine] : engines)
             out->engines.emplace(symbol, engine->clone());
         return out;
@@ -120,6 +123,17 @@ struct Exchange::State {
         if (sequence == std::numeric_limits<std::uint64_t>::max())
             return false;
         event.sequence = ++sequence;
+        if (public_capture) {
+            constexpr std::size_t max_public_events = 1025;
+            if (public_capture->size() >= max_public_events)
+                throw std::length_error("prepared public event limit");
+#ifdef CHRONOS_TEST_ID_SEAM
+            if (public_capture->size() == public_capture->capacity() &&
+                detail::before_capture_allocation_for_test)
+                detail::before_capture_allocation_for_test();
+#endif
+            public_capture->push_back(event);
+        }
         for (auto &[id, session] : sessions) {
             (void)id;
             const auto it = session.subscriptions.find(event.symbol);
@@ -140,6 +154,8 @@ struct Exchange::State {
 
 static_assert(std::is_nothrow_move_constructible_v<Report>);
 static_assert(std::is_nothrow_destructible_v<Report>);
+static_assert(std::is_nothrow_move_constructible_v<InstalledSummary>);
+static_assert(std::is_nothrow_destructible_v<InstalledSummary>);
 
 Exchange::Exchange(std::size_t sessions, std::size_t orders, std::size_t reports,
                    std::size_t requests, std::uint64_t initial_feed_sequence)
@@ -174,7 +190,7 @@ Exchange::Prepared::~Prepared() = default;
 std::unique_ptr<Exchange::Prepared>
 Exchange::prepare_submit(std::uint64_t session, std::uint64_t request, std::uint64_t client,
                          core::SymbolId symbol, core::Side side, core::OrderType type,
-                         core::Price price, core::Quantity quantity) {
+                         core::Price price, core::Quantity quantity, bool capture_public) {
     if (!exclusive_)
         throw std::logic_error("prepared submission requires exclusive registration");
     auto prepared = std::make_unique<Prepared>();
@@ -182,10 +198,23 @@ Exchange::prepare_submit(std::uint64_t session, std::uint64_t request, std::uint
     const auto reserved_id = prepared->reservation->id();
     const auto previous_id =
         reserved_id == 0 ? std::numeric_limits<std::uint64_t>::max() : reserved_id - 1;
+    if (capture_public) {
+        prepared->command.emplace(CanonicalCommand::submit(
+            session, request, client, symbol.value(), static_cast<std::uint8_t>(side),
+            static_cast<std::uint8_t>(type), price, quantity));
+        prepared->symbol = symbol.value();
+        prepared->allocator_before = previous_id;
+        prepared->session = session;
+        prepared->request = request;
+        prepared->client = client;
+    }
     auto work = Exchange::isolated(max_sessions_, max_orders_, max_reports_, max_requests_,
                                    state_->initial_feed_sequence, previous_id);
     work->state_ = state_->clone();
+    if (capture_public)
+        work->state_->public_capture = &prepared->public_events;
     prepared->result = work->submit(session, request, client, symbol, side, type, price, quantity);
+    work->state_->public_capture = nullptr;
     if (prepared->result == Result::Accepted) {
         if (reserved_id == 0 || work->state_->orders.empty() ||
             work->state_->orders.back().internal != reserved_id)
@@ -195,18 +224,163 @@ Exchange::prepare_submit(std::uint64_t session, std::uint64_t request, std::uint
     return prepared;
 }
 
-std::unique_ptr<Exchange::Prepared>
-Exchange::prepare_cancel(std::uint64_t session, std::uint64_t request, std::uint64_t client) {
+std::unique_ptr<Exchange::Prepared> Exchange::prepare_cancel(std::uint64_t session,
+                                                             std::uint64_t request,
+                                                             std::uint64_t client,
+                                                             bool capture_public) {
     if (!exclusive_)
         throw std::logic_error("prepared cancellation requires exclusive registration");
     auto prepared = std::make_unique<Prepared>();
+    if (capture_public) {
+        prepared->command.emplace(CanonicalCommand::cancel(session, request, client));
+        prepared->session = session;
+        prepared->request = request;
+        prepared->client = client;
+        const auto order =
+            std::find_if(state_->orders.begin(), state_->orders.end(), [=](const State::Order &o) {
+                return o.session == session && o.client == client;
+            });
+        if (order != state_->orders.end())
+            prepared->symbol = order->symbol;
+        // Exclusive registration prevents any competing live allocator use.
+        detail::OrderIdAllocator::Reservation sample(*allocator_);
+        prepared->allocator_before =
+            sample.id() == 0 ? std::numeric_limits<std::uint64_t>::max() : sample.id() - 1;
+    }
     auto work = Exchange::isolated(max_sessions_, max_orders_, max_reports_, max_requests_,
                                    state_->initial_feed_sequence);
     work->state_ = state_->clone();
+    if (capture_public)
+        work->state_->public_capture = &prepared->public_events;
     prepared->result = work->cancel(session, request, client);
+    work->state_->public_capture = nullptr;
     if (prepared->result == Result::Accepted)
         prepared->candidate = std::move(work->state_);
     return prepared;
+}
+
+InstalledSummary Exchange::summarize_prepared(Prepared &prepared) const {
+    constexpr std::size_t max_trades = 1024, max_reports = 4096;
+    InstalledSummary summary;
+    summary.result_ = prepared.result;
+    summary.command_before_ = summary.command_after_ = state_->command;
+    summary.event_before_ = summary.event_after_ = state_->event;
+    summary.command_ = prepared.command;
+    summary.allocator_before_ = summary.allocator_after_ = prepared.allocator_before;
+    const auto symbol_snapshot = [](const State &state, std::uint32_t symbol) {
+        SymbolCounterSnapshot snapshot{symbol, false, {}, 0, false, state.initial_feed_sequence};
+        const auto engine = state.engines.find(symbol);
+        if (engine != state.engines.end()) {
+            snapshot.engine_present = true;
+            snapshot.matching = engine->second->counters();
+            snapshot.book_revision = engine->second->book_revision();
+        }
+        const auto feed = state.feed_sequences.find(symbol);
+        if (feed != state.feed_sequences.end()) {
+            snapshot.feed_present = true;
+            snapshot.feed_sequence = feed->second;
+        }
+        return snapshot;
+    };
+    const auto position_snapshot = [](const State &state, std::uint64_t session,
+                                      std::uint32_t symbol) -> std::optional<std::int64_t> {
+        const auto account = state.sessions.find(session);
+        if (account == state.sessions.end())
+            return std::nullopt;
+        const auto position = account->second.positions.find(symbol);
+        return position == account->second.positions.end() ? 0 : position->second;
+    };
+    if (prepared.symbol) {
+        summary.symbol_before_ = symbol_snapshot(*state_, *prepared.symbol);
+        summary.symbol_after_ = summary.symbol_before_;
+        summary.initiator_position_before_ =
+            position_snapshot(*state_, prepared.session, *prepared.symbol);
+        summary.initiator_position_after_ = summary.initiator_position_before_;
+    }
+    if (prepared.result != Result::Accepted)
+        return summary;
+    if (!prepared.candidate)
+        throw std::logic_error("accepted preparation has no candidate");
+    const auto &candidate = *prepared.candidate;
+    if (candidate.public_capture != nullptr)
+        throw std::logic_error("prepared candidate still has a capture sink");
+    if (candidate.trades.size() < state_->trades.size() || candidate.command <= state_->command ||
+        candidate.command - state_->command != 1 || candidate.event < state_->event)
+        throw std::logic_error("invalid prepared state counters");
+    const auto trade_count = candidate.trades.size() - state_->trades.size();
+    if (trade_count > max_trades)
+        throw std::length_error("prepared trade summary limit");
+    summary.trades_.assign(candidate.trades.begin() +
+                               static_cast<std::ptrdiff_t>(state_->trades.size()),
+                           candidate.trades.end());
+    std::size_t report_count = 0;
+    for (const auto &[id, session] : candidate.sessions) {
+        const auto old = state_->sessions.find(id);
+        if (old == state_->sessions.end() || session.reports.size() < old->second.reports.size())
+            throw std::logic_error("invalid prepared report queues");
+        const auto added = session.reports.size() - old->second.reports.size();
+        if (added > max_reports - report_count)
+            throw std::length_error("prepared report summary limit");
+        report_count += added;
+    }
+    if (candidate.sessions.size() != state_->sessions.size() ||
+        candidate.event - state_->event != report_count)
+        throw std::logic_error("prepared report count mismatch");
+    summary.reports_.reserve(report_count);
+    for (const auto &[id, session] : candidate.sessions) {
+        const auto previous = state_->sessions.at(id).reports.size();
+        for (auto i = previous; i < session.reports.size(); ++i)
+            summary.reports_.push_back({id, session.reports[i]});
+    }
+    std::sort(summary.reports_.begin(), summary.reports_.end(),
+              [](const RecipientReport &a, const RecipientReport &b) {
+                  return a.report.sequence < b.report.sequence;
+              });
+    for (std::size_t i = 0; i < summary.reports_.size(); ++i)
+        if (summary.reports_[i].report.sequence != state_->event + i + 1)
+            throw std::logic_error("prepared report sequence mismatch");
+    if (prepared.reservation)
+        summary.new_id_ = prepared.reservation->id();
+    if (summary.new_id_)
+        summary.allocator_after_ = *summary.new_id_;
+    if (prepared.public_events.size() < trade_count ||
+        prepared.public_events.size() - trade_count > 1)
+        throw std::logic_error("prepared public event count mismatch");
+    if (!prepared.public_events.empty()) {
+        const auto symbol = prepared.public_events.front().symbol;
+        const auto old = state_->feed_sequences.find(symbol);
+        auto sequence =
+            old == state_->feed_sequences.end() ? state_->initial_feed_sequence : old->second;
+        for (std::size_t i = 0; i < prepared.public_events.size(); ++i) {
+            const auto &event = prepared.public_events[i];
+            if (sequence == std::numeric_limits<std::uint64_t>::max() || event.symbol != symbol ||
+                event.sequence != ++sequence || event.generation != 0)
+                throw std::logic_error("prepared public event sequence mismatch");
+            if (i < trade_count) {
+                const auto &trade = summary.trades_[i];
+                if (event.kind != MarketKind::Trade || event.trade_price != trade.price ||
+                    event.trade_quantity != trade.quantity || event.symbol != trade.symbol)
+                    throw std::logic_error("prepared trade event mismatch");
+            } else if (event.kind != MarketKind::Book)
+                throw std::logic_error("prepared book event mismatch");
+        }
+        const auto actual = candidate.feed_sequences.find(symbol);
+        if (actual == candidate.feed_sequences.end() || actual->second != sequence)
+            throw std::logic_error("prepared feed counter mismatch");
+    }
+    summary.public_events_ = std::move(prepared.public_events);
+    if (prepared.symbol) {
+        summary.symbol_after_ = symbol_snapshot(candidate, *prepared.symbol);
+        summary.initiator_position_after_ =
+            position_snapshot(candidate, prepared.session, *prepared.symbol);
+    }
+    for (const auto &item : summary.reports_)
+        if (item.session == prepared.session && item.report.request_id == prepared.request &&
+            item.report.client_order_id == prepared.client)
+            summary.initiator_final_report_ = item.report;
+    summary.command_after_ = candidate.command;
+    summary.event_after_ = candidate.event;
+    return summary;
 }
 
 void Exchange::install_prepared(Prepared &prepared) noexcept {

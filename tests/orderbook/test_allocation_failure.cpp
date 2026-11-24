@@ -289,6 +289,41 @@ TEST(PreparedExchangeAllocation, PreparationFailuresLeaveLiveStateUnchanged) {
     EXPECT_GE(failures, 5);
 }
 
+TEST(PreparedExchangeAllocation, SummaryConstructionFailureIsAtomic) {
+    using namespace chronos;
+    int failures = 0;
+    bool completed = false;
+    for (int fail_at = 0; fail_at < 128 && !completed; ++fail_at) {
+        exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+        owner.bind();
+        ASSERT_TRUE(owner.open_session(1));
+        const auto before = owner.exact_continuation_state(4096);
+        bool threw = false;
+        allocations_until_failure = fail_at;
+        try {
+            const auto summary = owner.submit_with_summary(
+                1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit, 100, 1);
+            allocations_until_failure = -1;
+            EXPECT_TRUE(summary.installed());
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            threw = true;
+        } catch (...) {
+            allocations_until_failure = -1;
+            throw;
+        }
+        if (threw) {
+            ++failures;
+            EXPECT_EQ(owner.exact_continuation_state(4096), before);
+            EXPECT_FALSE(owner.front(1));
+        }
+        EXPECT_TRUE(owner.finish());
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GE(failures, 5);
+}
+
 namespace {
 Order make_order(std::uint64_t id, Price price, Quantity quantity) {
     return Order{OrderId{id}, SymbolId{1}, Side::Buy, OrderType::Limit, price, quantity, id};

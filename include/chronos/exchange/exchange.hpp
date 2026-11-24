@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chronos/exchange/allocation_registry.hpp"
+#include "chronos/exchange/canonical_command.hpp"
 #include "chronos/exchange/order_id_allocator.hpp"
 #include "chronos/matching/matching_engine.hpp"
 
@@ -9,10 +10,17 @@
 #include <limits>
 #include <memory>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace chronos::exchange {
 class LiveExchangeOwner;
+#ifdef CHRONOS_TEST_ID_SEAM
+namespace detail {
+// Linked only in the isolated allocator/capture test executable.
+inline thread_local void (*before_capture_allocation_for_test)() = nullptr;
+} // namespace detail
+#endif
 
 // Prototype owner-thread API. All calls, including reads, must be serialized.
 enum class Result {
@@ -75,6 +83,78 @@ struct MarketEvent {
     MarketKind kind;
     core::Price bid_price, ask_price, trade_price;
     core::Quantity bid_quantity, ask_quantity, trade_quantity;
+};
+
+struct RecipientReport {
+    std::uint64_t session;
+    Report report;
+};
+
+struct SymbolCounterSnapshot {
+    std::uint32_t symbol;
+    bool engine_present;
+    matching::Counters matching;
+    std::uint64_t book_revision;
+    bool feed_present;
+    std::uint64_t feed_sequence;
+};
+
+// A post-install snapshot, not a prepared handle or a complete journal outcome.
+// Subscriber delivery effects and verification metadata remain unavailable.
+class InstalledSummary final {
+  public:
+    [[nodiscard]] Result result() const noexcept { return result_; }
+    [[nodiscard]] bool installed() const noexcept { return installed_; }
+    [[nodiscard]] std::optional<std::uint64_t> new_order_id() const noexcept { return new_id_; }
+    [[nodiscard]] std::uint64_t command_before() const noexcept { return command_before_; }
+    [[nodiscard]] std::uint64_t command_after() const noexcept { return command_after_; }
+    [[nodiscard]] std::uint64_t event_before() const noexcept { return event_before_; }
+    [[nodiscard]] std::uint64_t event_after() const noexcept { return event_after_; }
+    [[nodiscard]] const std::optional<CanonicalCommand> &command() const noexcept {
+        return command_;
+    }
+    [[nodiscard]] const std::optional<SymbolCounterSnapshot> &symbol_before() const noexcept {
+        return symbol_before_;
+    }
+    [[nodiscard]] const std::optional<SymbolCounterSnapshot> &symbol_after() const noexcept {
+        return symbol_after_;
+    }
+    [[nodiscard]] const std::optional<std::uint64_t> &allocator_before() const noexcept {
+        return allocator_before_;
+    }
+    [[nodiscard]] const std::optional<std::uint64_t> &allocator_after() const noexcept {
+        return allocator_after_;
+    }
+    [[nodiscard]] const std::optional<Report> &initiator_final_report() const noexcept {
+        return initiator_final_report_;
+    }
+    [[nodiscard]] const std::optional<std::int64_t> &initiator_position_before() const noexcept {
+        return initiator_position_before_;
+    }
+    [[nodiscard]] const std::optional<std::int64_t> &initiator_position_after() const noexcept {
+        return initiator_position_after_;
+    }
+    [[nodiscard]] std::span<const AuditTrade> trades() const noexcept { return trades_; }
+    [[nodiscard]] std::span<const RecipientReport> reports() const noexcept { return reports_; }
+    [[nodiscard]] std::span<const MarketEvent> public_events() const noexcept {
+        return public_events_;
+    }
+
+  private:
+    friend class Exchange;
+    friend class LiveExchangeOwner;
+    Result result_ = Result::InvalidOrder;
+    bool installed_ = false;
+    std::optional<std::uint64_t> new_id_;
+    std::optional<CanonicalCommand> command_;
+    std::optional<SymbolCounterSnapshot> symbol_before_, symbol_after_;
+    std::optional<std::uint64_t> allocator_before_, allocator_after_;
+    std::optional<Report> initiator_final_report_;
+    std::optional<std::int64_t> initiator_position_before_, initiator_position_after_;
+    std::uint64_t command_before_ = 0, command_after_ = 0, event_before_ = 0, event_after_ = 0;
+    std::vector<AuditTrade> trades_;
+    std::vector<RecipientReport> reports_;
+    std::vector<MarketEvent> public_events_;
 };
 
 class Exchange {
@@ -154,13 +234,21 @@ class Exchange {
         Result result = Result::InvalidOrder;
         std::unique_ptr<State> candidate;
         std::unique_ptr<detail::OrderIdAllocator::Reservation> reservation;
+        std::vector<MarketEvent> public_events;
+        std::optional<CanonicalCommand> command;
+        std::optional<std::uint32_t> symbol;
+        std::optional<std::uint64_t> allocator_before;
+        std::uint64_t session = 0, client = 0, request = 0;
     };
     [[nodiscard]] std::unique_ptr<Prepared>
     prepare_submit(std::uint64_t session, std::uint64_t request, std::uint64_t client,
                    core::SymbolId symbol, core::Side side, core::OrderType type, core::Price price,
-                   core::Quantity quantity);
-    [[nodiscard]] std::unique_ptr<Prepared>
-    prepare_cancel(std::uint64_t session, std::uint64_t request, std::uint64_t client);
+                   core::Quantity quantity, bool capture_public = false);
+    [[nodiscard]] std::unique_ptr<Prepared> prepare_cancel(std::uint64_t session,
+                                                           std::uint64_t request,
+                                                           std::uint64_t client,
+                                                           bool capture_public = false);
+    [[nodiscard]] InstalledSummary summarize_prepared(Prepared &prepared) const;
     void install_prepared(Prepared &prepared) noexcept;
     // Shared leases outlive state_; an exclusive owner may release at terminal stop.
     detail::AllocationRegistry::Lease registration_;
