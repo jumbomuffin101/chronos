@@ -1,3 +1,4 @@
+#include "chronos/exchange/canonical_replay_envelope.hpp"
 #include "chronos/exchange/live_owner.hpp"
 #include "chronos/exchange/restricted_replay.hpp"
 
@@ -151,6 +152,43 @@ TEST(PublicCaptureAllocation, RestrictedRecordingAllocationSweepIsAtomic) {
     }
     EXPECT_TRUE(completed);
     EXPECT_GT(failures, 0);
+}
+
+TEST(PublicCaptureAllocation, CanonicalEnvelopeAllocationFailureLeavesOwnerUnchanged) {
+    using namespace chronos;
+    exchange::RestrictedReplay owner;
+    exchange::RestrictedReplay::Operation open{exchange::RestrictedReplay::Kind::Open};
+    open.args[0] = 1;
+    ASSERT_TRUE(owner.apply(open).committed);
+    const auto before = owner.exact_state();
+    exchange::CanonicalReplayEnvelope::Identity identity{};
+    identity[0] = 1;
+    const auto sealed = exchange::CanonicalReplayEnvelope::seal(owner, identity);
+    for (bool verify : {false, true}) {
+        bool completed = false;
+        int failures = 0;
+        for (int index = 0; index < 512 && !completed; ++index) {
+            allocations_until_failure = index;
+            try {
+                bool valid = false;
+                if (verify)
+                    valid = exchange::CanonicalReplayEnvelope::verify(sealed.bytes, sealed.anchor);
+                else
+                    valid = exchange::CanonicalReplayEnvelope::seal(owner, identity).bytes ==
+                            sealed.bytes;
+                allocations_until_failure = -1;
+                ASSERT_TRUE(valid);
+                completed = true;
+            } catch (const std::bad_alloc &) {
+                allocations_until_failure = -1;
+                ++failures;
+                EXPECT_EQ(owner.exact_state(), before);
+            }
+            allocations_until_failure = -1;
+        }
+        EXPECT_TRUE(completed);
+        EXPECT_GT(failures, 0);
+    }
 }
 void operator delete(void *p) noexcept { std::free(p); }
 void operator delete(void *p, std::size_t) noexcept { std::free(p); }

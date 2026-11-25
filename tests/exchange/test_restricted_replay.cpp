@@ -1,3 +1,4 @@
+#include "chronos/exchange/canonical_replay_envelope.hpp"
 #include "chronos/exchange/restricted_replay.hpp"
 
 #include <gtest/gtest.h>
@@ -12,7 +13,147 @@ Restricted::Operation op(Restricted::Kind kind, std::initializer_list<std::uint6
     std::copy(args.begin(), args.end(), result.args.begin());
     return result;
 }
+void resign(exchange::CanonicalReplayEnvelope::Sealed &sealed) {
+    std::fill(sealed.bytes.begin() + 136, sealed.bytes.begin() + 168, 0);
+    sealed.anchor.digest = journal::sha256(sealed.bytes);
+    std::copy(sealed.anchor.digest.begin(), sealed.anchor.digest.end(), sealed.bytes.begin() + 136);
+}
 } // namespace
+
+TEST(RestrictedReplay, CanonicalStateAndEnvelopeVerifyIndependently) {
+    using Envelope = exchange::CanonicalReplayEnvelope;
+    Restricted owner;
+    ASSERT_TRUE(owner.apply(op(Restricted::Kind::Open, {1})).committed);
+    ASSERT_TRUE(owner.apply(op(Restricted::Kind::Submit, {1, 1, 1, 1, 0, 0, 100, 2})).committed);
+    ASSERT_TRUE(owner.apply(op(Restricted::Kind::Consume, {1, 1})).committed);
+    Envelope::Identity identity{};
+    identity[0] = 42;
+    const auto sealed = Envelope::seal(owner, identity);
+    ASSERT_TRUE(Envelope::verify(sealed.bytes, sealed.anchor));
+    EXPECT_EQ(sealed.anchor.terminal, 3U);
+    Restricted shorter;
+    ASSERT_TRUE(shorter.apply(op(Restricted::Kind::Open, {1})).committed);
+    ASSERT_TRUE(shorter.apply(op(Restricted::Kind::Submit, {1, 1, 1, 1, 0, 0, 100, 2})).committed);
+    const auto prefix = Envelope::seal(shorter, identity);
+    EXPECT_TRUE(Envelope::verify(prefix.bytes, prefix.anchor));
+    EXPECT_FALSE(Envelope::verify(prefix.bytes, sealed.anchor));
+    Restricted replacement;
+    ASSERT_TRUE(replacement.apply(op(Restricted::Kind::Open, {2})).committed);
+    const auto substitute = Envelope::seal(replacement, identity);
+    EXPECT_TRUE(Envelope::verify(substitute.bytes, substitute.anchor));
+    EXPECT_FALSE(Envelope::verify(substitute.bytes, sealed.anchor));
+    auto altered = sealed;
+    altered.anchor.identity[0] ^= 1;
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[32] ^= 1; // incompatible configuration even with recomputed digest
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[103] = 2; // wrong allocator scope
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[64] ^= 1; // altered initial state identity
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes.back() ^= 1; // changed state bytes, with internally consistent digest
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[319] = 2; // first canonical state schema version
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[375] ^= 1; // first canonical state exchange command counter
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[135] ^= 1; // terminal offset
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[207] ^= 1; // first record outcome
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[191] = 2; // first record sequence
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[199] = 255; // first record kind
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[176] = 255; // impossible canonical state length
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[15] = 2; // unsupported envelope schema
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    const auto read_word = [](const std::vector<std::uint8_t> &bytes, std::size_t pos) {
+        std::uint64_t value = 0;
+        for (std::size_t i = 0; i < 8; ++i)
+            value = (value << 8) | bytes[pos + i];
+        return static_cast<std::size_t>(value);
+    };
+    const auto first_end =
+        Envelope::header_size + 16 + read_word(altered.bytes, 168) + read_word(altered.bytes, 176);
+    const auto second_end = first_end + 16 + read_word(altered.bytes, first_end) +
+                            read_word(altered.bytes, first_end + 8);
+    std::rotate(altered.bytes.begin() + static_cast<std::ptrdiff_t>(Envelope::header_size),
+                altered.bytes.begin() + static_cast<std::ptrdiff_t>(first_end),
+                altered.bytes.begin() + static_cast<std::ptrdiff_t>(second_end));
+    resign(altered);
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes[136] ^= 1;
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.bytes.pop_back();
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    altered = sealed;
+    altered.anchor.terminal = 2;
+    EXPECT_FALSE(Envelope::verify(altered.bytes, altered.anchor));
+    EXPECT_THROW(static_cast<void>(Envelope::seal(owner, {})), std::invalid_argument);
+}
+
+TEST(RestrictedReplay, CanonicalStateHasExplicitVersionAndBounds) {
+    auto first = exchange::Exchange::isolated(16, 128, 128, 128, 0, 0);
+    auto second = exchange::Exchange::isolated(16, 128, 128, 128, 0, 0);
+    const auto initial = first->canonical_isolated_state();
+    EXPECT_EQ(initial, second->canonical_isolated_state());
+    ASSERT_GE(initial.size(), 16U);
+    const std::array<std::uint8_t, 8> magic{'C', 'H', 'R', 'C', 'S', 'T', '0', '1'};
+    EXPECT_TRUE(std::equal(magic.begin(), magic.end(), initial.begin()));
+    EXPECT_EQ(initial[15], 1U);
+    std::array<std::uint8_t, 120> expected{};
+    std::copy(magic.begin(), magic.end(), expected.begin());
+    expected[15] = 1;
+    expected[23] = 16;
+    expected[31] = 128;
+    expected[39] = 128;
+    expected[47] = 128;
+    EXPECT_TRUE(std::equal(initial.begin(), initial.end(), expected.begin(), expected.end()));
+    EXPECT_THROW(static_cast<void>(first->canonical_isolated_state(8)), std::length_error);
+    EXPECT_THROW(static_cast<void>(first->canonical_isolated_state(65537)), std::length_error);
+    ASSERT_TRUE(first->open_session(1));
+    EXPECT_NE(first->canonical_isolated_state(), initial);
+    ASSERT_TRUE(first->subscribe(1, core::SymbolId{1}));
+    EXPECT_THROW(static_cast<void>(first->canonical_isolated_state()), std::logic_error);
+    auto exhausted = exchange::Exchange::isolated(16, 128, 128, 128, 0,
+                                                  std::numeric_limits<std::uint64_t>::max());
+    EXPECT_NE(exhausted->canonical_isolated_state(), initial);
+    ASSERT_TRUE(exhausted->open_session(1));
+    const auto before = exhausted->canonical_isolated_state();
+    EXPECT_EQ(exhausted->submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit,
+                                100, 1),
+              exchange::Result::CounterExhausted);
+    EXPECT_EQ(exhausted->canonical_isolated_state(), before);
+}
 
 TEST(RestrictedReplay, VerifiesCompleteIsolatedSequenceAndRejectsCorruption) {
     Restricted owner;
@@ -151,6 +292,10 @@ TEST(RestrictedReplay, RiskMultiLevelPartialFillAndCancelMatchIndependentExchang
     EXPECT_NE(independent->cancel(3, 2, 999), exchange::Result::Accepted);
     EXPECT_EQ(owner.exact_state(), independent->isolated_continuation_state(8192));
     EXPECT_TRUE(Restricted::verify(owner.records(), owner.size()));
+    exchange::CanonicalReplayEnvelope::Identity identity{};
+    identity[0] = 9;
+    const auto sealed = exchange::CanonicalReplayEnvelope::seal(owner, identity);
+    EXPECT_TRUE(exchange::CanonicalReplayEnvelope::verify(sealed.bytes, sealed.anchor));
 }
 
 TEST(RestrictedReplay, SamePriceFifoAndWrongOwnerCancellationAreReplayed) {

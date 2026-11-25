@@ -14,6 +14,7 @@ namespace chronos::exchange {
 
 // Experimental in-memory domain only. No gateway attachment or durable format.
 class RestrictedReplay final {
+    friend class CanonicalReplayEnvelope;
     struct Context {};
     static const std::shared_ptr<const Context> &context() {
         static thread_local const auto value = std::make_shared<const Context>();

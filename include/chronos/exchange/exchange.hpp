@@ -263,6 +263,10 @@ class Exchange {
     // exchanges. This is not a live exchange import or publication interface.
     [[nodiscard]] std::vector<std::uint64_t>
     isolated_continuation_state(std::size_t max_words) const;
+    // Versioned exact verification bytes for isolated exchanges without public
+    // subscriptions. Not a live import or durability interface.
+    [[nodiscard]] std::vector<std::uint8_t>
+    canonical_isolated_state(std::size_t max_bytes = 65536) const;
 
   private:
     friend class LiveExchangeOwner;

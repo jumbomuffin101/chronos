@@ -953,6 +953,157 @@ std::vector<std::uint64_t> Exchange::isolated_continuation_state(std::size_t max
         throw std::logic_error("continuation capture requires an isolated exchange");
     return state_words(max_words, true, private_allocator_.private_last());
 }
+
+std::vector<std::uint8_t> Exchange::canonical_isolated_state(std::size_t max_bytes) const {
+    if (!isolated_)
+        throw std::logic_error("canonical capture requires isolated exchange");
+    if (max_bytes > 65536)
+        throw std::length_error("canonical state limit");
+    std::vector<std::uint8_t> out;
+    const auto add = [&](std::uint64_t value) {
+        if (max_bytes < 8 || out.size() > max_bytes - 8)
+            throw std::length_error("canonical state exceeds byte limit");
+        for (int i = 7; i >= 0; --i)
+            out.push_back(static_cast<std::uint8_t>(value >> (8 * i)));
+    };
+    const auto report_kind = [](ReportKind kind) -> std::uint64_t {
+        switch (kind) {
+        case ReportKind::Accepted:
+            return 1;
+        case ReportKind::PartialFill:
+            return 2;
+        case ReportKind::Filled:
+            return 3;
+        case ReportKind::Resting:
+            return 4;
+        case ReportKind::Cancelled:
+            return 5;
+        case ReportKind::MarketRemainder:
+            return 6;
+        }
+        throw std::logic_error("unknown report kind");
+    };
+    add(0x4348524353543031ULL); // CHRCST01
+    add(1);                     // schema version
+    add(max_sessions_);
+    add(max_orders_);
+    add(max_reports_);
+    add(max_requests_);
+    add(private_allocator_.private_last());
+    add(state_->initial_feed_sequence);
+    add(state_->command);
+    add(state_->event);
+    add(state_->sessions.size());
+    for (const auto &[id, account] : state_->sessions) {
+        if (!account.subscriptions.empty())
+            throw std::logic_error("canonical schema excludes public subscriptions");
+        add(id);
+        add(account.killed ? 1 : 0);
+        const auto &limits = account.limits;
+        add(limits.max_order_quantity);
+        add(limits.max_order_notional);
+        add(limits.max_open_notional);
+        add(limits.max_open_orders);
+        add(limits.max_abs_position);
+        add(static_cast<std::uint64_t>(limits.max_market_price));
+        add(limits.allowed_symbols.size());
+        for (auto symbol : limits.allowed_symbols)
+            add(symbol);
+        add(account.requests.size());
+        for (auto request : account.requests)
+            add(request);
+        add(account.positions.size());
+        for (const auto &[symbol, position] : account.positions) {
+            add(symbol);
+            add(static_cast<std::uint64_t>(position));
+        }
+        add(account.reports.size());
+        for (const auto &report : account.reports) {
+            add(report.sequence);
+            add(report.command_sequence);
+            add(report.request_id);
+            add(report.client_order_id);
+            add(report.internal_order_id);
+            add(report.trade_id);
+            add(report.symbol);
+            add(static_cast<std::uint64_t>(report.price));
+            add(report.quantity);
+            add(report.remaining);
+            add(report_kind(report.kind));
+        }
+        add(account.subscription_generation);
+    }
+    add(state_->orders.size());
+    for (const auto &order : state_->orders) {
+        add(order.session);
+        add(order.client);
+        add(order.internal);
+        add(order.request);
+        add(order.symbol);
+        add(order.open ? 1 : 0);
+    }
+    add(state_->trades.size());
+    for (const auto &trade : state_->trades) {
+        add(trade.command_sequence);
+        add(trade.trade_id);
+        add(trade.buyer_session);
+        add(trade.seller_session);
+        add(trade.buy_internal_id);
+        add(trade.sell_internal_id);
+        add(trade.symbol);
+        add(static_cast<std::uint64_t>(trade.price));
+        add(trade.quantity);
+    }
+    add(state_->feed_sequences.size());
+    for (const auto &[symbol, sequence] : state_->feed_sequences) {
+        add(symbol);
+        add(sequence);
+    }
+    add(state_->engines.size());
+    for (const auto &[symbol, engine] : state_->engines) {
+        add(symbol);
+        const auto c = engine->counters();
+        add(c.command);
+        add(c.event);
+        add(c.trade);
+        add(engine->book_revision());
+        switch (engine->transaction_mode()) {
+        case matching::TransactionMode::Planned:
+            add(1);
+            break;
+        case matching::TransactionMode::CloneReference:
+            add(2);
+            break;
+        default:
+            throw std::logic_error("unknown transaction mode");
+        }
+        for (const auto side : {core::Side::Buy, core::Side::Sell}) {
+            const auto count = engine->price_level_count(side);
+            if (count > max_bytes / 32)
+                throw std::length_error("canonical level limit");
+            const auto levels = engine->depth(side, count);
+            if (levels.size() != count)
+                throw std::logic_error("canonical level count mismatch");
+            add(count);
+            for (const auto &level : levels) {
+                if (level.order_count > max_bytes / 24)
+                    throw std::length_error("canonical order limit");
+                add(static_cast<std::uint64_t>(level.price));
+                add(level.quantity);
+                add(level.order_count);
+                const auto orders = engine->orders_at(side, level.price);
+                if (orders.size() != level.order_count)
+                    throw std::logic_error("canonical order count mismatch");
+                for (const auto &order : orders) {
+                    add(order.id.value());
+                    add(order.quantity);
+                    add(order.sequence);
+                }
+            }
+        }
+    }
+    return out;
+}
 std::vector<std::uint64_t> Exchange::live_continuation_state(std::size_t max_words) const {
     if (isolated_ || !exclusive_)
         throw std::logic_error("live continuation capture requires exclusive registration");
