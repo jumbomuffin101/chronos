@@ -1,6 +1,7 @@
 #pragma once
 
 #include "chronos/exchange/exchange.hpp"
+#include "chronos/exchange/operation_record.hpp"
 
 #include <atomic>
 #include <functional>
@@ -137,6 +138,28 @@ class LiveExchangeOwner final {
                                 std::uint64_t client) {
         return dispatch_mutation([&] { return exchange_.cancel(session, request, client); });
     }
+    // Optional local observation; other owner entry points do not emit a record.
+    [[nodiscard]] CommandRecord submit_recorded(std::uint64_t session, std::uint64_t request,
+                                                std::uint64_t client, core::SymbolId symbol,
+                                                core::Side side, core::OrderType type,
+                                                core::Price price, core::Quantity quantity) {
+        const auto command = CanonicalCommand::submit(
+            session, request, client, symbol.value(), static_cast<std::uint8_t>(side),
+            static_cast<std::uint8_t>(type), price, quantity);
+        return dispatch_mutation([&] {
+            const auto result =
+                exchange_.submit(session, request, client, symbol, side, type, price, quantity);
+            return CommandRecord{diagnostic_index_ + 1, command, result};
+        });
+    }
+    [[nodiscard]] CommandRecord cancel_recorded(std::uint64_t session, std::uint64_t request,
+                                                std::uint64_t client) {
+        const auto command = CanonicalCommand::cancel(session, request, client);
+        return dispatch_mutation([&] {
+            const auto result = exchange_.cancel(session, request, client);
+            return CommandRecord{diagnostic_index_ + 1, command, result};
+        });
+    }
     // Gateway-facing non-durable authorization: no caller-supplied callback
     // runs between preparation and installation. Rejections are authoritative
     // results with no candidate installed; no persistence is implied.
@@ -175,6 +198,25 @@ class LiveExchangeOwner final {
     }
     void pop(std::uint64_t session) {
         dispatch_mutation([&] { exchange_.pop(session); });
+    }
+    // A conditional owner-local dequeue; the resulting record is not delivery
+    // acknowledgment and the diagnostic index is not a journal sequence.
+    [[nodiscard]] DequeueRecord consume_expected_report(std::uint64_t session,
+                                                        std::uint64_t expected_sequence) {
+        return dispatch_mutation([&] {
+            const auto index = diagnostic_index_ + 1;
+            if (session == 0 || expected_sequence == 0)
+                return DequeueRecord{index, session, expected_sequence, 0, DequeueStatus::Invalid};
+            const auto front = exchange_.front(session);
+            if (!front)
+                return DequeueRecord{index, session, expected_sequence, 0, DequeueStatus::Empty};
+            if (front->sequence != expected_sequence)
+                return DequeueRecord{index, session, expected_sequence, front->sequence,
+                                     DequeueStatus::Mismatch};
+            exchange_.pop(session);
+            return DequeueRecord{index, session, expected_sequence, expected_sequence,
+                                 DequeueStatus::Consumed};
+        });
     }
     // Counts completed owner calls, including business rejections and no-ops.
     // Not a journal LSN or a complete exchange/process mutation sequence.

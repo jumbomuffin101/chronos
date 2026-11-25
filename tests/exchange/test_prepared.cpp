@@ -5,6 +5,153 @@
 
 using namespace chronos;
 
+TEST(PreparedExchange, ExpectedDequeueChecksRecipientAndLeavesOtherFrontUntouched) {
+    exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    ASSERT_TRUE(owner.open_session(1));
+    ASSERT_TRUE(owner.open_session(2));
+    ASSERT_EQ(
+        owner.submit(1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit, 100, 1),
+        exchange::Result::Accepted);
+    ASSERT_EQ(
+        owner.submit(2, 1, 1, core::SymbolId{1}, core::Side::Sell, core::OrderType::Limit, 101, 1),
+        exchange::Result::Accepted);
+    const auto first = owner.front(1);
+    const auto second = owner.front(2);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(second);
+    ASSERT_NE(first->sequence, second->sequence);
+    const auto before = owner.exact_continuation_state(4096);
+    EXPECT_EQ(owner.consume_expected_report(2, first->sequence).status,
+              exchange::DequeueStatus::Mismatch);
+    EXPECT_EQ(owner.exact_continuation_state(4096), before);
+    EXPECT_EQ(owner.front(2)->sequence, second->sequence);
+    const auto first_index = owner.diagnostic_mutation_index();
+    const auto observed = owner.cancel_recorded(1, 2, 999);
+    EXPECT_NE(observed.result, exchange::Result::Accepted);
+    EXPECT_EQ(observed.diagnostic_index, first_index + 1);
+    ASSERT_TRUE(owner.consume_expected_report(2, second->sequence).encode());
+    EXPECT_EQ(owner.front(1)->sequence, first->sequence);
+    EXPECT_TRUE(owner.finish());
+}
+
+TEST(PreparedExchange, RecordedCommandsAndConditionalDequeueUseActualResults) {
+    exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    ASSERT_TRUE(owner.open_session(1));
+    const auto submitted = owner.submit_recorded(1, 1, 1, core::SymbolId{1}, core::Side::Buy,
+                                                 core::OrderType::Limit, 100, 2);
+    EXPECT_EQ(submitted.result, exchange::Result::Accepted);
+    EXPECT_EQ(submitted.diagnostic_index, 2U);
+    ASSERT_TRUE(submitted.encode());
+    const auto decoded = exchange::CommandRecord::decode(*submitted.encode());
+    ASSERT_TRUE(decoded);
+    EXPECT_EQ(decoded->command.encode(), submitted.command.encode());
+    EXPECT_EQ(decoded->result, submitted.result);
+    const auto report = owner.front(1);
+    ASSERT_TRUE(report);
+    const auto before = owner.exact_continuation_state(4096);
+    EXPECT_EQ(owner.consume_expected_report(2, report->sequence).status,
+              exchange::DequeueStatus::Empty);
+    EXPECT_EQ(owner.exact_continuation_state(4096), before);
+    bool wrong_thread_denied = false;
+    std::thread other([&] {
+        try {
+            static_cast<void>(owner.consume_expected_report(1, report->sequence));
+        } catch (const std::logic_error &) {
+            wrong_thread_denied = true;
+        }
+    });
+    other.join();
+    EXPECT_TRUE(wrong_thread_denied);
+    owner.with_frozen_state([&] {
+        EXPECT_THROW(static_cast<void>(owner.consume_expected_report(1, report->sequence)),
+                     std::logic_error);
+    });
+    const auto wrong = owner.consume_expected_report(1, report->sequence + 1);
+    EXPECT_EQ(wrong.status, exchange::DequeueStatus::Mismatch);
+    EXPECT_EQ(owner.exact_continuation_state(4096), before);
+    const auto consumed = owner.consume_expected_report(1, report->sequence);
+    EXPECT_EQ(consumed.status, exchange::DequeueStatus::Consumed);
+    ASSERT_TRUE(consumed.encode());
+    ASSERT_TRUE(exchange::DequeueRecord::decode(*consumed.encode()));
+    const auto duplicate = owner.consume_expected_report(1, report->sequence);
+    EXPECT_EQ(duplicate.status, exchange::DequeueStatus::Mismatch);
+    ASSERT_TRUE(owner.front(1));
+    const auto last = owner.front(1)->sequence;
+    EXPECT_EQ(owner.consume_expected_report(1, last).status, exchange::DequeueStatus::Consumed);
+    EXPECT_EQ(owner.consume_expected_report(1, last).status, exchange::DequeueStatus::Empty);
+    EXPECT_EQ(owner.consume_expected_report(0, last).status, exchange::DequeueStatus::Invalid);
+    const auto cancelled = owner.cancel_recorded(1, 2, 1);
+    EXPECT_EQ(cancelled.result, exchange::Result::Accepted);
+    ASSERT_TRUE(cancelled.encode());
+    EXPECT_TRUE(exchange::CommandRecord::decode(*cancelled.encode()));
+    const auto rejected = owner.cancel_recorded(1, 3, 999);
+    EXPECT_NE(rejected.result, exchange::Result::Accepted);
+    ASSERT_TRUE(rejected.encode());
+    EXPECT_EQ(exchange::CommandRecord::decode(*rejected.encode())->result, rejected.result);
+    EXPECT_TRUE(owner.finish());
+}
+
+TEST(PreparedExchange, PartialOperationCodecsRejectNoncanonicalBytes) {
+    const exchange::DequeueRecord record{1, 2, 3, 3, exchange::DequeueStatus::Consumed};
+    ASSERT_TRUE(record.encode());
+    const auto bytes = *record.encode();
+    exchange::DequeueRecord::Bytes golden{};
+    golden[1] = 1;
+    golden[2] = 1;
+    golden[3] = 1;
+    golden[15] = 1;
+    golden[23] = 2;
+    golden[31] = 3;
+    golden[39] = 3;
+    EXPECT_EQ(bytes, golden);
+    for (std::size_t n = 0; n < bytes.size(); ++n)
+        EXPECT_FALSE(exchange::DequeueRecord::decode(std::span{bytes}.first(n)));
+    std::array<std::uint8_t, exchange::DequeueRecord::encoded_size + 1> extra{};
+    std::copy(bytes.begin(), bytes.end(), extra.begin());
+    EXPECT_FALSE(exchange::DequeueRecord::decode(extra));
+    auto bad = bytes;
+    bad[4] = 1;
+    EXPECT_FALSE(exchange::DequeueRecord::decode(bad));
+    bad = bytes;
+    bad[1] = 2;
+    EXPECT_FALSE(exchange::DequeueRecord::decode(bad));
+    bad = bytes;
+    bad[39] = 4;
+    EXPECT_FALSE(exchange::DequeueRecord::decode(bad));
+    const exchange::CommandRecord command{1, exchange::CanonicalCommand::cancel(2, 3, 4),
+                                          exchange::Result::Accepted};
+    const auto encoded = command.encode();
+    ASSERT_TRUE(encoded);
+    exchange::CommandRecord::Bytes expected{};
+    expected[1] = 1;
+    expected[2] = 2;
+    expected[3] = 1;
+    expected[5] = 1;
+    expected[15] = 1;
+    expected[17] = 1;
+    expected[18] = 2;
+    expected[27] = 2;
+    expected[35] = 3;
+    expected[43] = 4;
+    EXPECT_EQ(*encoded, expected);
+    for (std::size_t n = 0; n < encoded->size(); ++n)
+        EXPECT_FALSE(exchange::CommandRecord::decode(std::span{*encoded}.first(n)));
+    std::array<std::uint8_t, exchange::CommandRecord::encoded_size + 1> extra_command{};
+    std::copy(encoded->begin(), encoded->end(), extra_command.begin());
+    EXPECT_FALSE(exchange::CommandRecord::decode(extra_command));
+    auto bad_command = *encoded;
+    bad_command[3] = 2;
+    EXPECT_FALSE(exchange::CommandRecord::decode(bad_command));
+    bad_command = *encoded;
+    bad_command[7] = 1;
+    EXPECT_FALSE(exchange::CommandRecord::decode(bad_command));
+    bad_command = *encoded;
+    bad_command[5] = 255;
+    EXPECT_FALSE(exchange::CommandRecord::decode(bad_command));
+}
+
 TEST(PreparedExchange, DiagnosticIndexCountsRejectionAndNoOpButNotThrowOrAbort) {
     exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
     owner.bind();

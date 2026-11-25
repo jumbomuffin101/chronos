@@ -103,6 +103,23 @@ TEST(PublicCaptureAllocation, DiagnosticIndexExhaustionFailsBeforeMutation) {
     EXPECT_EQ(owner.exact_continuation_state(4096), before);
     EXPECT_TRUE(owner.finish());
 }
+
+TEST(PublicCaptureAllocation, RecordedSubmitAllocationFailureReturnsNoRecordOrMutation) {
+    using namespace chronos;
+    exchange::LiveExchangeOwner owner(2, 16, 16, 16, exchange::AllocationMode::Exclusive);
+    owner.bind();
+    ASSERT_TRUE(owner.open_session(1));
+    const auto before = owner.exact_continuation_state(4096);
+    const auto index = owner.diagnostic_mutation_index();
+    allocations_until_failure = 0;
+    EXPECT_THROW(static_cast<void>(owner.submit_recorded(
+                     1, 1, 1, core::SymbolId{1}, core::Side::Buy, core::OrderType::Limit, 100, 1)),
+                 std::bad_alloc);
+    allocations_until_failure = -1;
+    EXPECT_EQ(owner.diagnostic_mutation_index(), index);
+    EXPECT_EQ(owner.exact_continuation_state(4096), before);
+    EXPECT_TRUE(owner.finish());
+}
 void operator delete(void *p) noexcept { std::free(p); }
 void operator delete(void *p, std::size_t) noexcept { std::free(p); }
 void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
