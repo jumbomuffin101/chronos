@@ -30,9 +30,9 @@ class CanonicalReplayEnvelope final {
     [[nodiscard]] static Sealed seal(const RestrictedReplay &owner, Identity identity) {
         if (std::all_of(identity.begin(), identity.end(), [](auto x) { return x == 0; }))
             throw std::invalid_argument("zero isolated stream identity");
-        const auto records = owner.records();
-        auto candidate = RestrictedReplay::fresh();
-        const auto initial = candidate->canonical_isolated_state();
+        owner.require_owner();
+        auto initial_exchange = RestrictedReplay::fresh();
+        const auto initial = initial_exchange->canonical_isolated_state();
         const auto initial_hash = journal::sha256(initial);
         const auto config = config_hash();
         Bytes out(header_size, 0);
@@ -42,18 +42,18 @@ class CanonicalReplayEnvelope final {
         std::copy(identity.begin(), identity.end(), out.begin() + 16);
         std::copy(config.begin(), config.end(), out.begin() + 32);
         std::copy(initial_hash.begin(), initial_hash.end(), out.begin() + 64);
-        write(out, 96, 1);               // isolated private allocator
-        write(out, 104, 1);              // initial operation sequence
-        write(out, 112, records.size()); // terminal sequence, zero for empty
-        write(out, 120, records.size());
-        for (std::size_t i = 0; i < records.size(); ++i) {
-            const auto record = RestrictedReplay::decode(records[i]);
-            if (record.sequence != i + 1 ||
-                RestrictedReplay::execute(*candidate, record.op) != record.outcome ||
-                candidate->isolated_continuation_state(RestrictedReplay::max_state_words) !=
-                    record.state)
-                throw std::logic_error("source replay divergence");
-            const auto state = candidate->canonical_isolated_state();
+        write(out, 96, 1);             // isolated private allocator
+        write(out, 104, 1);            // initial operation sequence
+        write(out, 112, owner.count_); // terminal sequence, zero for empty
+        write(out, 120, owner.count_);
+        for (std::size_t i = 0; i < owner.count_; ++i) {
+            const auto &installed = owner.records_[i];
+            if (!installed)
+                throw std::logic_error("missing native record");
+            const auto record = RestrictedReplay::decode(installed->legacy);
+            if (record.sequence != i + 1)
+                throw std::logic_error("source record sequence mismatch");
+            const auto &state = installed->canonical;
             if (out.size() > max_stream_bytes - 16 ||
                 operation_size > max_stream_bytes - out.size() - 16 ||
                 state.size() > max_stream_bytes - out.size() - 16 - operation_size)
@@ -67,12 +67,13 @@ class CanonicalReplayEnvelope final {
                 append(out, arg);
             out.insert(out.end(), state.begin(), state.end());
         }
-        if (candidate->canonical_isolated_state() != owner.state_->canonical_isolated_state())
+        const auto &terminal = owner.count_ ? owner.records_[owner.count_ - 1]->canonical : initial;
+        if (terminal != owner.state_->canonical_isolated_state())
             throw std::logic_error("source terminal canonical state mismatch");
         write(out, 128, out.size());
         const auto digest = journal::sha256(out); // digest field is zero
         std::copy(digest.begin(), digest.end(), out.begin() + 136);
-        return {std::move(out), Anchor{identity, records.size(), digest}};
+        return {std::move(out), Anchor{identity, owner.count_, digest}};
     }
 
     // Anchor must be obtained from an independent trusted source if identity

@@ -134,6 +134,8 @@ TEST(PublicCaptureAllocation, RestrictedRecordingAllocationSweepIsAtomic) {
         ASSERT_TRUE(owner.apply(first).committed);
         const auto before = owner.exact_state();
         const auto prior = owner.records();
+        const auto canonical_before = owner.canonical_state();
+        const auto first_canonical = owner.recorded_canonical(0);
         auto next = first;
         next.args[0] = 2;
         allocations_until_failure = index;
@@ -147,11 +149,52 @@ TEST(PublicCaptureAllocation, RestrictedRecordingAllocationSweepIsAtomic) {
             ++failures;
             EXPECT_EQ(owner.exact_state(), before);
             EXPECT_EQ(owner.records(), prior);
+            EXPECT_EQ(owner.canonical_state(), canonical_before);
+            EXPECT_EQ(owner.recorded_canonical(0), first_canonical);
         }
         allocations_until_failure = -1;
     }
     EXPECT_TRUE(completed);
     EXPECT_GT(failures, 0);
+}
+
+TEST(PublicCaptureAllocation, RestrictedCanonicalLimitFailsBeforeInstallation) {
+    using namespace chronos;
+    exchange::RestrictedReplay owner;
+    exchange::RestrictedReplay::Operation open{exchange::RestrictedReplay::Kind::Open};
+    open.args[0] = 1;
+    const auto before = owner.exact_state();
+    const auto canonical_before = owner.canonical_state();
+    owner.set_canonical_limit_for_test(8);
+    EXPECT_THROW(static_cast<void>(owner.apply(open)), std::length_error);
+    EXPECT_EQ(owner.size(), 0U);
+    EXPECT_EQ(owner.exact_state(), before);
+    EXPECT_EQ(owner.canonical_state(), canonical_before);
+    owner.set_canonical_limit_for_test(65536);
+    ASSERT_TRUE(owner.apply(open).committed);
+    EXPECT_EQ(owner.size(), 1U);
+    ASSERT_EQ(owner.records().size(), 1U);
+    EXPECT_EQ(owner.recorded_canonical(0), owner.canonical_state());
+}
+
+TEST(PublicCaptureAllocation, NativeApplyAndSealDoNotReplayHistory) {
+    using namespace chronos;
+    using R = exchange::RestrictedReplay;
+    R owner;
+    R::execution_count_for_test = 0;
+    R::Operation open{R::Kind::Open};
+    open.args[0] = 1;
+    ASSERT_TRUE(owner.apply(open).committed);
+    EXPECT_EQ(R::execution_count_for_test, 1U);
+    open.args[0] = 2;
+    ASSERT_TRUE(owner.apply(open).committed);
+    EXPECT_EQ(R::execution_count_for_test, 2U);
+    exchange::CanonicalReplayEnvelope::Identity identity{};
+    identity[0] = 1;
+    const auto sealed = exchange::CanonicalReplayEnvelope::seal(owner, identity);
+    EXPECT_EQ(R::execution_count_for_test, 2U);
+    ASSERT_TRUE(exchange::CanonicalReplayEnvelope::verify(sealed.bytes, sealed.anchor));
+    EXPECT_EQ(R::execution_count_for_test, 4U);
 }
 
 TEST(PublicCaptureAllocation, CanonicalEnvelopeAllocationFailureLeavesOwnerUnchanged) {

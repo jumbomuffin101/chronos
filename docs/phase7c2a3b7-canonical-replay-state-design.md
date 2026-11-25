@@ -1,5 +1,7 @@
 # Canonical verification for restricted isolated replay
 
+The recording and sealing lifecycle described here is the Phase 7C.2A.3b.7 baseline. Its successor is described in [canonical-native recording](phase7c2a3b8-canonical-native-recording-design.md).
+
 This is an in-memory verification format for the [restricted isolated domain](phase7c2a3b6-restricted-replay-design.md), not a durable journal, manifest, live recovery or authenticated exchange identity. It uses an explicit exact-state schema, a bounded stream envelope and an externally supplied verification anchor. The ordinary gateway, CHRSTATE and the provisional journal inspector formats are unchanged.
 
 ## State schema and scope

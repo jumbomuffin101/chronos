@@ -15,6 +15,7 @@
 
 namespace chronos::exchange {
 class LiveExchangeOwner;
+class RestrictedReplay;
 #ifdef CHRONOS_TEST_ID_SEAM
 namespace detail {
 // Linked only in the isolated allocator/capture test executable.
@@ -270,6 +271,7 @@ class Exchange {
 
   private:
     friend class LiveExchangeOwner;
+    friend class RestrictedReplay;
     struct IsolatedTag {};
     struct LiveTag {};
     [[nodiscard]] std::vector<std::uint64_t> state_words(std::size_t max_words, bool exact,
@@ -283,6 +285,7 @@ class Exchange {
     Exchange(LiveTag, std::size_t sessions, std::size_t orders, std::size_t reports,
              std::size_t requests, std::uint64_t initial_feed_sequence, AllocationMode mode);
     void release_exclusive_registration() noexcept;
+    [[nodiscard]] std::unique_ptr<Exchange> clone_restricted_isolated() const;
     struct State;
     struct Prepared {
         Prepared();

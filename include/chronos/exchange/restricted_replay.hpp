@@ -2,6 +2,7 @@
 
 #include "chronos/exchange/operation_record.hpp"
 
+#include <array>
 #include <bit>
 #include <limits>
 #include <memory>
@@ -16,6 +17,10 @@ namespace chronos::exchange {
 class RestrictedReplay final {
     friend class CanonicalReplayEnvelope;
     struct Context {};
+    struct InstalledRecord {
+        std::vector<std::uint8_t> legacy;
+        std::vector<std::uint8_t> canonical;
+    };
     static const std::shared_ptr<const Context> &context() {
         static thread_local const auto value = std::make_shared<const Context>();
         return value;
@@ -47,7 +52,6 @@ class RestrictedReplay final {
         : owner_(context()), state_(fresh()), capacity_(capacity) {
         if (capacity > max_operations)
             throw std::invalid_argument("restricted operation capacity");
-        records_.reserve(capacity);
     }
     RestrictedReplay(const RestrictedReplay &) = delete;
     RestrictedReplay &operator=(const RestrictedReplay &) = delete;
@@ -60,24 +64,36 @@ class RestrictedReplay final {
         require_owner();
         if (!valid(op))
             throw std::invalid_argument("unsupported restricted operation");
-        if (records_.size() >= capacity_)
+        if (count_ >= capacity_)
             throw std::length_error("restricted operation capacity exhausted");
-        auto candidate = rebuild(records_, records_.size());
+        if (records_[count_])
+            throw std::logic_error("restricted record slot already occupied");
+        auto candidate = state_->clone_restricted_isolated();
         const auto outcome = execute(*candidate, op);
         const auto words = candidate->isolated_continuation_state(max_state_words);
         if (!commit)
             return {false, outcome};
-        auto encoded = encode(records_.size() + 1, op, outcome, words);
-        // Capacity was reserved in the constructor and Bytes move is noexcept.
-        static_assert(std::is_nothrow_move_constructible_v<Bytes>);
+        auto canonical = candidate->canonical_isolated_state(canonical_limit_);
+        auto encoded = encode(count_ + 1, op, outcome, words);
+        auto prepared = std::make_unique<InstalledRecord>(
+            InstalledRecord{std::move(encoded), std::move(canonical)});
+        // All allocations and checks are complete. No callback or observer
+        // can run between the two nonthrowing swaps and count publication.
         static_assert(std::is_nothrow_swappable_v<std::unique_ptr<Exchange>>);
-        records_.push_back(std::move(encoded));
+        static_assert(std::is_nothrow_swappable_v<std::unique_ptr<InstalledRecord>>);
+        static_assert(std::is_nothrow_destructible_v<Exchange>);
         state_.swap(candidate);
+        records_[count_].swap(prepared);
+        ++count_;
         return {true, outcome};
     }
     [[nodiscard]] std::vector<Bytes> records() const {
         require_owner();
-        return records_;
+        std::vector<Bytes> copy;
+        copy.reserve(count_);
+        for (std::size_t i = 0; i < count_; ++i)
+            copy.push_back(records_[i]->legacy);
+        return copy;
     }
     [[nodiscard]] std::vector<std::uint64_t> exact_state() const {
         require_owner();
@@ -85,8 +101,25 @@ class RestrictedReplay final {
     }
     [[nodiscard]] std::size_t size() const {
         require_owner();
-        return records_.size();
+        return count_;
     }
+    [[nodiscard]] Bytes canonical_state() const {
+        require_owner();
+        return state_->canonical_isolated_state();
+    }
+    [[nodiscard]] Bytes recorded_canonical(std::size_t index) const {
+        require_owner();
+        if (index >= count_)
+            throw std::out_of_range("restricted record index");
+        return records_[index]->canonical;
+    }
+#ifdef CHRONOS_TEST_ID_SEAM
+    inline static thread_local std::size_t execution_count_for_test = 0;
+    void set_canonical_limit_for_test(std::size_t limit) {
+        require_owner();
+        canonical_limit_ = limit;
+    }
+#endif
     // expected_count is supplied independently to detect a missing suffix.
     [[nodiscard]] static bool verify(std::span<const Bytes> records, std::size_t expected_count) {
         if (records.size() != expected_count || expected_count > max_operations)
@@ -164,6 +197,9 @@ class RestrictedReplay final {
         return 16 + static_cast<std::uint64_t>(it - operation_result_codes.begin());
     }
     [[nodiscard]] static std::uint64_t execute(Exchange &exchange, const Operation &op) {
+#ifdef CHRONOS_TEST_ID_SEAM
+        ++execution_count_for_test;
+#endif
         const auto &a = op.args;
         switch (op.kind) {
         case Kind::Open:
@@ -270,6 +306,8 @@ class RestrictedReplay final {
     std::shared_ptr<const Context> owner_;
     std::unique_ptr<Exchange> state_;
     std::size_t capacity_;
-    std::vector<Bytes> records_;
+    std::size_t count_ = 0;
+    std::size_t canonical_limit_ = 65536;
+    std::array<std::unique_ptr<InstalledRecord>, max_operations> records_{};
 };
 } // namespace chronos::exchange

@@ -184,6 +184,15 @@ std::unique_ptr<Exchange> Exchange::isolated(std::size_t sessions, std::size_t o
                                                   requests, initial_feed_sequence, last_id));
 }
 Exchange::~Exchange() = default;
+std::unique_ptr<Exchange> Exchange::clone_restricted_isolated() const {
+    if (!isolated_ || state_->public_capture)
+        throw std::logic_error("restricted clone requires uncaptured isolated exchange");
+    auto copy =
+        Exchange::isolated(max_sessions_, max_orders_, max_reports_, max_requests_,
+                           state_->initial_feed_sequence, private_allocator_.private_last());
+    copy->state_ = state_->clone();
+    return copy;
+}
 Exchange::Prepared::Prepared() = default;
 Exchange::Prepared::~Prepared() = default;
 

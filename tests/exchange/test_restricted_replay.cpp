@@ -20,6 +20,36 @@ void resign(exchange::CanonicalReplayEnvelope::Sealed &sealed) {
 }
 } // namespace
 
+TEST(RestrictedReplay, NativeRecordsCaptureOriginalCandidateAndRemainStable) {
+    Restricted owner;
+    const auto apply_and_check = [&](const Restricted::Operation &operation) {
+        const auto result = owner.apply(operation);
+        EXPECT_TRUE(result.committed);
+        EXPECT_EQ(owner.recorded_canonical(owner.size() - 1), owner.canonical_state());
+        return result;
+    };
+    apply_and_check(op(Restricted::Kind::Open, {1}));
+    const auto first = owner.recorded_canonical(0);
+    apply_and_check(op(Restricted::Kind::Risk, {1, 10, 100000, 100000, 10, 1000, 1000, 1, 1}));
+    apply_and_check(op(Restricted::Kind::Open, {2}));
+    apply_and_check(op(Restricted::Kind::Submit, {1, 1, 1, 1, 1, 0, 100, 3}));
+    apply_and_check(op(Restricted::Kind::Submit, {2, 1, 1, 1, 0, 0, 100, 2}));
+    apply_and_check(op(Restricted::Kind::Consume, {1, 1}));
+    apply_and_check(op(Restricted::Kind::Cancel, {1, 2, 1}));
+    apply_and_check(op(Restricted::Kind::Close, {1}));
+    EXPECT_EQ(owner.recorded_canonical(0), first);
+    const auto before = owner.canonical_state();
+    EXPECT_FALSE(owner.apply(op(Restricted::Kind::Open, {3}), false).committed);
+    EXPECT_EQ(owner.canonical_state(), before);
+    EXPECT_EQ(owner.size(), 8U);
+    EXPECT_THROW(static_cast<void>(owner.recorded_canonical(8)), std::out_of_range);
+    exchange::CanonicalReplayEnvelope::Identity identity{};
+    identity[0] = 7;
+    const auto envelope = exchange::CanonicalReplayEnvelope::seal(owner, identity);
+    EXPECT_TRUE(exchange::CanonicalReplayEnvelope::verify(envelope.bytes, envelope.anchor));
+    EXPECT_TRUE(Restricted::verify(owner.records(), owner.size()));
+}
+
 TEST(RestrictedReplay, CanonicalStateAndEnvelopeVerifyIndependently) {
     using Envelope = exchange::CanonicalReplayEnvelope;
     Restricted owner;
