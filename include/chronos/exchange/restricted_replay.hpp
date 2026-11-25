@@ -16,6 +16,9 @@ namespace chronos::exchange {
 // Experimental in-memory domain only. No gateway attachment or durable format.
 class RestrictedReplay final {
     friend class CanonicalReplayEnvelope;
+#ifdef CHRONOS_TEST_ID_SEAM
+    friend class AuthorizationTestHarness;
+#endif
     struct Context {};
     struct InstalledRecord {
         std::vector<std::uint8_t> legacy;

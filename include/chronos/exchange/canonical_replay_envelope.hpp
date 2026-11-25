@@ -10,6 +10,9 @@ namespace chronos::exchange {
 
 // In-memory experimental envelope, distinct from the journal inspector format.
 class CanonicalReplayEnvelope final {
+#ifdef CHRONOS_TEST_ID_SEAM
+    friend class AuthorizationTestHarness;
+#endif
   public:
     using Bytes = std::vector<std::uint8_t>;
     using Identity = std::array<std::uint8_t, 16>;

@@ -272,6 +272,9 @@ class Exchange {
   private:
     friend class LiveExchangeOwner;
     friend class RestrictedReplay;
+#ifdef CHRONOS_TEST_ID_SEAM
+    friend class AuthorizationTestHarness;
+#endif
     struct IsolatedTag {};
     struct LiveTag {};
     [[nodiscard]] std::vector<std::uint64_t> state_words(std::size_t max_words, bool exact,

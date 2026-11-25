@@ -1,3 +1,4 @@
+#include "authorization_test_harness.hpp"
 #include "chronos/exchange/canonical_replay_envelope.hpp"
 #include "chronos/exchange/live_owner.hpp"
 #include "chronos/exchange/restricted_replay.hpp"
@@ -5,6 +6,7 @@
 #include <cstdlib>
 #include <gtest/gtest.h>
 #include <new>
+#include <thread>
 
 namespace {
 thread_local bool fail_next = false;
@@ -195,6 +197,193 @@ TEST(PublicCaptureAllocation, NativeApplyAndSealDoNotReplayHistory) {
     EXPECT_EQ(R::execution_count_for_test, 2U);
     ASSERT_TRUE(exchange::CanonicalReplayEnvelope::verify(sealed.bytes, sealed.anchor));
     EXPECT_EQ(R::execution_count_for_test, 4U);
+}
+
+TEST(PublicCaptureAllocation, TestAuthorizationInstallsExactlyOnceAndBindsCandidate) {
+    using H = chronos::exchange::AuthorizationTestHarness;
+    using R = chronos::exchange::RestrictedReplay;
+    H::Identity id{};
+    id[0] = 1;
+    H harness(id);
+    const auto before = harness.exact_state();
+    R::Operation open{R::Kind::Open};
+    open.args[0] = 1;
+    harness.prepare(open);
+    EXPECT_EQ(harness.phase(), H::Phase::Prepared);
+    EXPECT_GT(harness.request_size_for_test(), 0U);
+    EXPECT_EQ(harness.size(), 0U);
+    EXPECT_TRUE(harness.records().empty());
+    EXPECT_EQ(harness.exact_state(), before);
+    harness.begin_external_decision();
+    harness.inject_test_decision(H::TestDecision::Permit);
+    EXPECT_EQ(harness.phase(), H::Phase::Authorized);
+    EXPECT_EQ(harness.size(), 0U);
+    ASSERT_TRUE(harness.install());
+    EXPECT_EQ(harness.phase(), H::Phase::Installed);
+    EXPECT_EQ(harness.size(), 1U);
+    EXPECT_NE(harness.exact_state(), before);
+    R reference;
+    ASSERT_TRUE(reference.apply(open).committed);
+    EXPECT_EQ(harness.canonical_state(), reference.canonical_state());
+    EXPECT_TRUE(R::verify(harness.records(), 1));
+    EXPECT_THROW(static_cast<void>(harness.install()), std::logic_error);
+    EXPECT_THROW(harness.inject_test_decision(H::TestDecision::Permit), std::logic_error);
+    harness.reset_after_completion();
+    EXPECT_TRUE(harness.shutdown());
+}
+
+TEST(PublicCaptureAllocation, TestAuthorizationRejectsMismatchedTokensAndStops) {
+    using H = chronos::exchange::AuthorizationTestHarness;
+    using R = chronos::exchange::RestrictedReplay;
+    for (const auto fault :
+         {H::TestDecision::WrongCandidate, H::TestDecision::WrongSequence,
+          H::TestDecision::WrongIdentity, H::TestDecision::WrongConfiguration,
+          H::TestDecision::WrongPrefix, H::TestDecision::WrongLength, H::TestDecision::Ambiguous}) {
+        H::Identity id{};
+        id[0] = 1;
+        H harness(id);
+        const auto before = harness.exact_state();
+        R::Operation open{R::Kind::Open};
+        open.args[0] = 1;
+        harness.prepare(open);
+        harness.begin_external_decision();
+        harness.inject_test_decision(fault);
+        EXPECT_EQ(harness.phase(), H::Phase::FailedStop);
+        EXPECT_EQ(harness.size(), 0U);
+        EXPECT_EQ(harness.exact_state(), before);
+        EXPECT_THROW(harness.prepare(open), std::logic_error);
+        EXPECT_FALSE(harness.shutdown());
+        harness.acknowledge_unresolved_for_test();
+    }
+}
+
+TEST(PublicCaptureAllocation, TestAuthorizationAbortRefusalAndShutdownBoundaries) {
+    using H = chronos::exchange::AuthorizationTestHarness;
+    using R = chronos::exchange::RestrictedReplay;
+    H::Identity id{};
+    id[0] = 1;
+    R::Operation open{R::Kind::Open};
+    open.args[0] = 1;
+    {
+        H h(id);
+        const auto before = h.exact_state();
+        h.prepare(open);
+        h.abort_before_attempt();
+        EXPECT_EQ(h.phase(), H::Phase::Aborted);
+        EXPECT_EQ(h.exact_state(), before);
+        EXPECT_EQ(h.size(), 0U);
+        h.reset_after_completion();
+        h.prepare(open);
+        h.begin_external_decision();
+        h.inject_test_decision(H::TestDecision::Refuse);
+        EXPECT_EQ(h.phase(), H::Phase::Aborted);
+        EXPECT_EQ(h.diagnostic(), H::Diagnostic::Refused);
+        EXPECT_EQ(h.exact_state(), before);
+        EXPECT_EQ(h.size(), 0U);
+        EXPECT_TRUE(h.shutdown());
+    }
+    {
+        H h(id);
+        h.prepare(open);
+        h.begin_external_decision();
+        EXPECT_FALSE(h.shutdown());
+        EXPECT_EQ(h.phase(), H::Phase::FailedStop);
+        EXPECT_EQ(h.diagnostic(), H::Diagnostic::ShutdownPending);
+        EXPECT_EQ(h.size(), 0U);
+        h.acknowledge_unresolved_for_test();
+    }
+    {
+        H h(id);
+        h.prepare(open);
+        h.begin_external_decision();
+        h.inject_test_decision(H::TestDecision::Permit);
+        EXPECT_TRUE(h.shutdown());
+        EXPECT_EQ(h.phase(), H::Phase::Stopped);
+        EXPECT_EQ(h.size(), 1U);
+        EXPECT_THROW(h.prepare(open), std::logic_error);
+    }
+}
+
+TEST(PublicCaptureAllocation, TestAuthorizationPreparationAllocationFailuresAreAtomic) {
+    using H = chronos::exchange::AuthorizationTestHarness;
+    using R = chronos::exchange::RestrictedReplay;
+    bool completed = false;
+    int failures = 0;
+    for (int index = 0; index < 512 && !completed; ++index) {
+        H::Identity id{};
+        id[0] = 1;
+        H h(id);
+        const auto before = h.exact_state();
+        R::Operation open{R::Kind::Open};
+        open.args[0] = 1;
+        allocations_until_failure = index;
+        try {
+            h.prepare(open);
+            allocations_until_failure = -1;
+            EXPECT_EQ(h.size(), 0U);
+            h.abort_before_attempt();
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            ++failures;
+            EXPECT_EQ(h.phase(), H::Phase::Idle);
+            EXPECT_EQ(h.size(), 0U);
+            EXPECT_EQ(h.exact_state(), before);
+        }
+        allocations_until_failure = -1;
+        EXPECT_TRUE(h.shutdown());
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GT(failures, 0);
+}
+
+TEST(PublicCaptureAllocation, TestAuthorizationUnresolvedOwnerCannotBeSilentlyDestroyed) {
+    using H = chronos::exchange::AuthorizationTestHarness;
+    using R = chronos::exchange::RestrictedReplay;
+    EXPECT_DEATH(
+        {
+            H::Identity id{};
+            id[0] = 1;
+            H h(id);
+            R::Operation open{R::Kind::Open};
+            open.args[0] = 1;
+            h.prepare(open);
+            h.begin_external_decision();
+        },
+        "terminate");
+}
+
+TEST(PublicCaptureAllocation, TestAuthorizationRejectsWrongThreadAndPriorDecisionReuse) {
+    using H = chronos::exchange::AuthorizationTestHarness;
+    using R = chronos::exchange::RestrictedReplay;
+    H::Identity id{};
+    id[0] = 1;
+    H h(id);
+    R::Operation op{R::Kind::Open};
+    op.args[0] = 1;
+    bool rejected = false;
+    std::thread other([&] {
+        try {
+            h.prepare(op);
+        } catch (const std::logic_error &) {
+            rejected = true;
+        }
+    });
+    other.join();
+    EXPECT_TRUE(rejected);
+    EXPECT_EQ(h.size(), 0U);
+    h.prepare(op);
+    h.begin_external_decision();
+    h.inject_test_decision(H::TestDecision::Permit);
+    ASSERT_TRUE(h.install());
+    h.reset_after_completion();
+    op.args[0] = 2;
+    h.prepare(op);
+    EXPECT_THROW(static_cast<void>(h.install()), std::logic_error);
+    EXPECT_THROW(h.inject_test_decision(H::TestDecision::Permit), std::logic_error);
+    EXPECT_EQ(h.size(), 1U);
+    h.abort_before_attempt();
+    EXPECT_TRUE(h.shutdown());
 }
 
 TEST(PublicCaptureAllocation, CanonicalEnvelopeAllocationFailureLeavesOwnerUnchanged) {
