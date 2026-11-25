@@ -1,4 +1,5 @@
 #include "chronos/exchange/live_owner.hpp"
+#include "chronos/exchange/restricted_replay.hpp"
 
 #include <cstdlib>
 #include <gtest/gtest.h>
@@ -119,6 +120,37 @@ TEST(PublicCaptureAllocation, RecordedSubmitAllocationFailureReturnsNoRecordOrMu
     EXPECT_EQ(owner.diagnostic_mutation_index(), index);
     EXPECT_EQ(owner.exact_continuation_state(4096), before);
     EXPECT_TRUE(owner.finish());
+}
+
+TEST(PublicCaptureAllocation, RestrictedRecordingAllocationSweepIsAtomic) {
+    using namespace chronos;
+    bool completed = false;
+    int failures = 0;
+    for (int index = 0; index < 512 && !completed; ++index) {
+        exchange::RestrictedReplay owner;
+        exchange::RestrictedReplay::Operation first{exchange::RestrictedReplay::Kind::Open};
+        first.args[0] = 1;
+        ASSERT_TRUE(owner.apply(first).committed);
+        const auto before = owner.exact_state();
+        const auto prior = owner.records();
+        auto next = first;
+        next.args[0] = 2;
+        allocations_until_failure = index;
+        try {
+            const auto result = owner.apply(next);
+            allocations_until_failure = -1;
+            ASSERT_TRUE(result.committed);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            ++failures;
+            EXPECT_EQ(owner.exact_state(), before);
+            EXPECT_EQ(owner.records(), prior);
+        }
+        allocations_until_failure = -1;
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GT(failures, 0);
 }
 void operator delete(void *p) noexcept { std::free(p); }
 void operator delete(void *p, std::size_t) noexcept { std::free(p); }
