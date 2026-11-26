@@ -4,6 +4,7 @@
 #include "chronos/exchange/restricted_replay.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <gtest/gtest.h>
 #include <new>
 #include <thread>
@@ -11,11 +12,20 @@
 namespace {
 thread_local bool fail_next = false;
 thread_local int allocations_until_failure = -1;
+thread_local void (*allocation_hook)() = nullptr;
+thread_local void (*failure_cleanup_hook)() noexcept = nullptr;
+thread_local void (*deallocation_hook)() noexcept = nullptr;
 void arm_failure() { fail_next = true; }
 } // namespace
 void *operator new(std::size_t size) {
+    if (allocation_hook) {
+        const auto hook = allocation_hook;
+        allocation_hook = nullptr;
+        hook();
+    }
     if (allocations_until_failure == 0) {
         allocations_until_failure = -1;
+        deallocation_hook = failure_cleanup_hook;
         throw std::bad_alloc{};
     }
     if (allocations_until_failure > 0)
@@ -386,6 +396,397 @@ TEST(PublicCaptureAllocation, TestAuthorizationRejectsWrongThreadAndPriorDecisio
     EXPECT_TRUE(h.shutdown());
 }
 
+TEST(PublicCaptureAllocation, RecorderInMemoryAuthorizationMatchesDirectRecording) {
+    using R = chronos::exchange::RestrictedReplay;
+    R direct;
+    R::AuthorizationIdentity id{};
+    id[0] = 1;
+    R gated(R::InMemoryAuthorization{}, id);
+    R::Operation open{R::Kind::Open};
+    open.args[0] = 1;
+    ASSERT_TRUE(direct.apply(open).committed);
+    ASSERT_TRUE(gated.apply(open).committed);
+    EXPECT_EQ(gated.authorization_state(), R::AuthorizationState::Installed);
+    EXPECT_EQ(gated.canonical_state(), direct.canonical_state());
+    EXPECT_EQ(gated.records(), direct.records());
+    EXPECT_TRUE(R::verify(gated.records(), 1));
+}
+
+TEST(PublicCaptureAllocation, RecorderInMemoryAuthorizationRefusesOrFailsStopped) {
+    using R = chronos::exchange::RestrictedReplay;
+    R::AuthorizationIdentity id{};
+    id[0] = 1;
+    R::Operation open{R::Kind::Open};
+    open.args[0] = 1;
+    for (const auto fault :
+         {R::AuthorizationFaultForTest::Refuse, R::AuthorizationFaultForTest::Ambiguous,
+          R::AuthorizationFaultForTest::DigestMismatch, R::AuthorizationFaultForTest::WrongIdentity,
+          R::AuthorizationFaultForTest::WrongConfiguration,
+          R::AuthorizationFaultForTest::WrongSequence, R::AuthorizationFaultForTest::WrongPrefix,
+          R::AuthorizationFaultForTest::WrongCommand,
+          R::AuthorizationFaultForTest::WrongCanonicalState,
+          R::AuthorizationFaultForTest::WrongLength}) {
+        R gated(R::InMemoryAuthorization{}, id);
+        const auto before = gated.exact_state();
+        gated.authorization_fault_for_test(fault);
+        if (fault == R::AuthorizationFaultForTest::Refuse) {
+            EXPECT_FALSE(gated.apply(open).committed);
+            EXPECT_EQ(gated.authorization_state(), R::AuthorizationState::Refused);
+        } else {
+            EXPECT_THROW(static_cast<void>(gated.apply(open)), std::logic_error);
+            EXPECT_EQ(gated.authorization_state(), R::AuthorizationState::FailedStop);
+            EXPECT_THROW(static_cast<void>(gated.apply(open)), std::logic_error);
+        }
+        EXPECT_EQ(gated.size(), 0U);
+        EXPECT_EQ(gated.exact_state(), before);
+    }
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationPreparationFailureAndCapacity) {
+    using R = chronos::exchange::RestrictedReplay;
+    R::AuthorizationIdentity id{};
+    id[0] = 1;
+    R::Operation open{R::Kind::Open};
+    open.args[0] = 1;
+    R gated(R::InMemoryAuthorization{}, id);
+    const auto before = gated.exact_state();
+    gated.set_canonical_limit_for_test(1);
+    EXPECT_THROW(static_cast<void>(gated.apply(open)), std::length_error);
+    EXPECT_EQ(gated.size(), 0U);
+    EXPECT_EQ(gated.exact_state(), before);
+    gated.set_canonical_limit_for_test(65536);
+    for (std::size_t i = 0; i < R::max_operations; ++i)
+        ASSERT_TRUE(gated.apply(open).committed);
+    EXPECT_EQ(gated.size(), R::max_operations);
+    const auto full = gated.exact_state();
+    EXPECT_THROW(static_cast<void>(gated.apply(open)), std::length_error);
+    EXPECT_EQ(gated.exact_state(), full);
+    EXPECT_TRUE(R::verify(gated.records(), R::max_operations));
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationAllocationSweepIsAtomic) {
+    using R = chronos::exchange::RestrictedReplay;
+    bool completed = false;
+    int failures = 0;
+    for (int index = 0; index < 512 && !completed; ++index) {
+        R::AuthorizationIdentity id{};
+        id[0] = 1;
+        R gated(R::InMemoryAuthorization{}, id);
+        R::Operation open{R::Kind::Open};
+        open.args[0] = 1;
+        const auto before = gated.exact_state();
+        allocations_until_failure = index;
+        try {
+            const auto applied = gated.apply(open);
+            allocations_until_failure = -1;
+            EXPECT_TRUE(applied.committed);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            ++failures;
+            EXPECT_EQ(gated.exact_state(), before);
+            EXPECT_EQ(gated.size(), 0U);
+            EXPECT_TRUE(gated.records().empty());
+        }
+        allocations_until_failure = -1;
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GT(failures, 0);
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationPrefixAdvancesOnlyOnInstallation) {
+    using R = chronos::exchange::RestrictedReplay;
+    R::AuthorizationIdentity id{};
+    id[0] = 1;
+    R gated(R::InMemoryAuthorization{}, id);
+    R::Operation open{R::Kind::Open};
+    open.args[0] = 1;
+    const auto initial = gated.authorization_prefix_for_test();
+    gated.authorization_fault_for_test(R::AuthorizationFaultForTest::Refuse);
+    EXPECT_FALSE(gated.apply(open).committed);
+    EXPECT_EQ(gated.authorization_prefix_for_test(), initial);
+    gated.authorization_fault_for_test(R::AuthorizationFaultForTest::None);
+    ASSERT_TRUE(gated.apply(open).committed);
+    const auto first = gated.authorization_prefix_for_test();
+    EXPECT_NE(first, initial);
+    open.args[0] = 2;
+    ASSERT_TRUE(gated.apply(open).committed);
+    EXPECT_NE(gated.authorization_prefix_for_test(), first);
+    EXPECT_TRUE(R::verify(gated.records(), 2));
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationPrefixMatchesIndependentEncoding) {
+    using R = chronos::exchange::RestrictedReplay;
+    R::AuthorizationIdentity id{};
+    id[0] = 1;
+    R owner(R::InMemoryAuthorization{}, id);
+    std::array<std::uint8_t, 32> expected{};
+    const auto append = [](R::Bytes &bytes, std::uint64_t value) {
+        for (unsigned shift = 64; shift > 0; shift -= 8)
+            bytes.push_back(static_cast<std::uint8_t>(value >> (shift - 8)));
+    };
+    for (std::uint64_t session : {1ULL, 2ULL, 2ULL}) {
+        R::Operation op{R::Kind::Open};
+        op.args[0] = session;
+        const auto applied = owner.apply(op);
+        ASSERT_TRUE(applied.committed);
+        const auto records = owner.records();
+        const auto canonical = owner.recorded_canonical(owner.size() - 1);
+        R::Bytes request;
+        append(request, 0x4348524155544832ULL);
+        request.insert(request.end(), id.begin(), id.end());
+        for (auto config : {16ULL, 128ULL, 128ULL, 128ULL, 128ULL})
+            append(request, config);
+        append(request, owner.size());
+        request.insert(request.end(), expected.begin(), expected.end());
+        append(request, static_cast<std::uint64_t>(op.kind));
+        for (auto arg : op.args)
+            append(request, arg);
+        append(request, applied.outcome);
+        append(request, records.back().size());
+        request.insert(request.end(), records.back().begin(), records.back().end());
+        append(request, canonical.size());
+        request.insert(request.end(), canonical.begin(), canonical.end());
+        expected = chronos::journal::sha256(request);
+        EXPECT_EQ(owner.authorization_prefix_for_test(), expected);
+    }
+    EXPECT_EQ(owner.size(), 3U); // the last open is an admitted business rejection
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationRejectsReplayedPriorDecision) {
+    using R = chronos::exchange::RestrictedReplay;
+    R::AuthorizationIdentity id{};
+    id[0] = 1;
+    R owner(R::InMemoryAuthorization{}, id);
+    R::Operation op{R::Kind::Open};
+    op.args[0] = 1;
+    ASSERT_TRUE(owner.apply(op).committed);
+    const auto before = owner.exact_state();
+    const auto prefix = owner.authorization_prefix_for_test();
+    owner.authorization_fault_for_test(R::AuthorizationFaultForTest::ReplayedDecision);
+    op.args[0] = 2;
+    EXPECT_THROW(static_cast<void>(owner.apply(op)), std::logic_error);
+    EXPECT_EQ(owner.authorization_state(), R::AuthorizationState::FailedStop);
+    EXPECT_EQ(owner.exact_state(), before);
+    EXPECT_EQ(owner.authorization_prefix_for_test(), prefix);
+    EXPECT_EQ(owner.size(), 1U);
+    EXPECT_THROW(static_cast<void>(owner.apply(op)), std::logic_error);
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationDifferentialTradingHistory) {
+    using R = chronos::exchange::RestrictedReplay;
+    R direct;
+    R::AuthorizationIdentity id{};
+    id[0] = 1;
+    R gated(R::InMemoryAuthorization{}, id);
+    const auto step = [&](R::Kind kind, std::initializer_list<std::uint64_t> args) {
+        R::Operation op{kind};
+        std::copy(args.begin(), args.end(), op.args.begin());
+        const auto a = direct.apply(op);
+        const auto b = gated.apply(op);
+        EXPECT_EQ(a.committed, b.committed);
+        EXPECT_EQ(a.outcome, b.outcome);
+        EXPECT_EQ(direct.size(), gated.size());
+        EXPECT_EQ(direct.exact_state(), gated.exact_state());
+        EXPECT_EQ(direct.canonical_state(), gated.canonical_state());
+        EXPECT_EQ(direct.records(), gated.records());
+        EXPECT_EQ(direct.recorded_canonical(direct.size() - 1),
+                  gated.recorded_canonical(gated.size() - 1));
+        return a.outcome;
+    };
+    step(R::Kind::Open, {1});
+    step(R::Kind::Open, {2});
+    step(R::Kind::Open, {3});
+    step(R::Kind::Risk, {1, 10, 100000, 100000, 10, 1000, 1000, 1, 1});
+    EXPECT_EQ(step(R::Kind::Submit, {1, 1, 1, 1, 1, 0, 100, 3}), 16U);
+    EXPECT_EQ(step(R::Kind::Submit, {2, 1, 1, 1, 1, 0, 101, 3}), 16U);
+    EXPECT_EQ(step(R::Kind::Submit, {3, 1, 1, 1, 0, 0, 101, 4}), 16U);
+    EXPECT_EQ(step(R::Kind::Cancel, {2, 2, 1}), 16U);
+    step(R::Kind::Cancel, {3, 2, 999});
+    step(R::Kind::Consume, {1, 1});
+    step(R::Kind::Close, {1});
+    step(R::Kind::Close, {1});
+    EXPECT_TRUE(R::verify(gated.records(), gated.size()));
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationDifferentialFifoAndMarket) {
+    using R = chronos::exchange::RestrictedReplay;
+    R direct;
+    R::AuthorizationIdentity id{};
+    id[0] = 9;
+    R gated(R::InMemoryAuthorization{}, id);
+    const auto step = [&](R::Kind kind, std::initializer_list<std::uint64_t> args) {
+        R::Operation op{kind};
+        std::copy(args.begin(), args.end(), op.args.begin());
+        const auto a = direct.apply(op);
+        const auto b = gated.apply(op);
+        EXPECT_TRUE(a.committed);
+        EXPECT_TRUE(b.committed);
+        EXPECT_EQ(a.outcome, b.outcome);
+        EXPECT_EQ(direct.exact_state(), gated.exact_state());
+        EXPECT_EQ(direct.canonical_state(), gated.canonical_state());
+        EXPECT_EQ(direct.records(), gated.records());
+        return a.outcome;
+    };
+    for (std::uint64_t session : {1ULL, 2ULL, 3ULL})
+        EXPECT_EQ(step(R::Kind::Open, {session}), 1U);
+    EXPECT_EQ(step(R::Kind::Submit, {1, 1, 7, 1, 1, 0, 100, 2}), 16U);
+    EXPECT_EQ(step(R::Kind::Submit, {2, 1, 7, 1, 1, 0, 100, 2}), 16U);
+    EXPECT_NE(step(R::Kind::Cancel, {3, 1, 7}), 16U);
+    EXPECT_EQ(step(R::Kind::Submit, {3, 2, 8, 1, 0, 1, 0, 3}), 16U);
+    EXPECT_TRUE(R::verify(gated.records(), gated.size()));
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationDifferentialReportCapacity) {
+    using R = chronos::exchange::RestrictedReplay;
+    R direct;
+    R::AuthorizationIdentity id{};
+    id[0] = 3;
+    R gated(R::InMemoryAuthorization{}, id);
+    const auto step = [&](const R::Operation &op) {
+        const auto a = direct.apply(op);
+        const auto b = gated.apply(op);
+        EXPECT_EQ(a.committed, b.committed);
+        EXPECT_EQ(a.outcome, b.outcome);
+        EXPECT_EQ(direct.exact_state(), gated.exact_state());
+        EXPECT_EQ(direct.canonical_state(), gated.canonical_state());
+        EXPECT_EQ(direct.records(), gated.records());
+        return a.outcome;
+    };
+    R::Operation open{R::Kind::Open};
+    open.args[0] = 1;
+    EXPECT_EQ(step(open), 1U);
+    R::Operation submit{R::Kind::Submit};
+    submit.args = {1, 0, 0, 1, 0, 0, 100, 1};
+    for (std::uint64_t sequence = 1; sequence <= 64; ++sequence) {
+        submit.args[1] = submit.args[2] = sequence;
+        EXPECT_EQ(step(submit), 16U);
+    }
+    submit.args[1] = submit.args[2] = 65;
+    EXPECT_EQ(step(submit), 23U);
+    R::Operation consume{R::Kind::Consume};
+    consume.args[0] = consume.args[1] = 1;
+    EXPECT_EQ(step(consume), 1U);
+    EXPECT_EQ(step(consume), 3U);
+    consume.args[1] = 2;
+    EXPECT_EQ(step(consume), 1U);
+    EXPECT_EQ(step(submit), 16U);
+    EXPECT_TRUE(R::verify(gated.records(), gated.size()));
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationRejectsReentrantPreparation) {
+    using R = chronos::exchange::RestrictedReplay;
+    static thread_local R *current = nullptr;
+    static thread_local bool rejected = false;
+    R::AuthorizationIdentity id{};
+    id[0] = 1;
+    R gated(R::InMemoryAuthorization{}, id);
+    R::Operation open{R::Kind::Open};
+    open.args[0] = 1;
+    current = &gated;
+    rejected = false;
+    allocation_hook = [] {
+        R::Operation other{R::Kind::Open};
+        other.args[0] = 2;
+        try {
+            static_cast<void>(current->apply(other));
+        } catch (const std::logic_error &) {
+            rejected = true;
+        }
+    };
+    const auto result = gated.apply(open);
+    allocation_hook = nullptr;
+    current = nullptr;
+    EXPECT_TRUE(result.committed);
+    EXPECT_TRUE(rejected);
+    EXPECT_EQ(gated.size(), 1U);
+    EXPECT_TRUE(R::verify(gated.records(), 1));
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationRejectsReentrantMutationsByKind) {
+    using R = chronos::exchange::RestrictedReplay;
+    static thread_local R *current = nullptr;
+    static thread_local R::Kind kind = R::Kind::Open;
+    static thread_local bool rejected = false;
+    for (const auto candidate : {R::Kind::Submit, R::Kind::Cancel, R::Kind::Risk, R::Kind::Close}) {
+        R::AuthorizationIdentity id{};
+        id[0] = 1;
+        R owner(R::InMemoryAuthorization{}, id);
+        R::Operation open{R::Kind::Open};
+        open.args[0] = 1;
+        current = &owner;
+        kind = candidate;
+        rejected = false;
+        allocation_hook = [] {
+            R::Operation nested{kind};
+            try {
+                static_cast<void>(current->apply(nested));
+            } catch (const std::logic_error &error) {
+                rejected =
+                    std::strcmp(error.what(), "restricted authorization already pending") == 0;
+            }
+        };
+        ASSERT_TRUE(owner.apply(open).committed);
+        allocation_hook = nullptr;
+        EXPECT_TRUE(rejected);
+        EXPECT_EQ(owner.size(), 1U);
+    }
+    current = nullptr;
+}
+
+TEST(PublicCaptureAllocation, RecorderAuthorizationRejectsReentryDuringFailureCleanup) {
+    using R = chronos::exchange::RestrictedReplay;
+    static thread_local R *current = nullptr;
+    static thread_local bool seen = false;
+    static thread_local bool rejected = false;
+    int observed = 0;
+    bool completed = false;
+    for (int index = 0; index < 512 && !completed; ++index) {
+        R::AuthorizationIdentity id{};
+        id[0] = 1;
+        R owner(R::InMemoryAuthorization{}, id);
+        const auto before = owner.exact_state();
+        R::Operation open{R::Kind::Open};
+        open.args[0] = 1;
+        current = &owner;
+        seen = rejected = false;
+        failure_cleanup_hook = []() noexcept {
+            seen = true;
+            R::Operation nested{R::Kind::Open};
+            nested.args[0] = 2;
+            try {
+                static_cast<void>(current->apply(nested));
+            } catch (const std::logic_error &error) {
+                rejected =
+                    std::strcmp(error.what(), "restricted authorization already pending") == 0;
+            } catch (...) {
+            }
+        };
+        allocations_until_failure = index;
+        try {
+            const auto result = owner.apply(open);
+            allocations_until_failure = -1;
+            failure_cleanup_hook = nullptr;
+            deallocation_hook = nullptr;
+            EXPECT_TRUE(result.committed);
+            completed = true;
+        } catch (const std::bad_alloc &) {
+            allocations_until_failure = -1;
+            failure_cleanup_hook = nullptr;
+            deallocation_hook = nullptr;
+            if (seen) {
+                ++observed;
+                EXPECT_TRUE(rejected);
+            }
+            EXPECT_EQ(owner.size(), 0U);
+            EXPECT_EQ(owner.exact_state(), before);
+        }
+        current = nullptr;
+    }
+    EXPECT_TRUE(completed);
+    EXPECT_GT(observed, 0);
+}
+
 TEST(PublicCaptureAllocation, CanonicalEnvelopeAllocationFailureLeavesOwnerUnchanged) {
     using namespace chronos;
     exchange::RestrictedReplay owner;
@@ -422,8 +823,15 @@ TEST(PublicCaptureAllocation, CanonicalEnvelopeAllocationFailureLeavesOwnerUncha
         EXPECT_GT(failures, 0);
     }
 }
-void operator delete(void *p) noexcept { std::free(p); }
-void operator delete(void *p, std::size_t) noexcept { std::free(p); }
+void operator delete(void *p) noexcept {
+    if (deallocation_hook) {
+        const auto hook = deallocation_hook;
+        deallocation_hook = nullptr;
+        hook();
+    }
+    std::free(p);
+}
+void operator delete(void *p, std::size_t) noexcept { ::operator delete(p); }
 void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
     try {
         return ::operator new(size);
